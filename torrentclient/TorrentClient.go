@@ -6,16 +6,17 @@ import (
 	"os"
 	"time"
 
-	Bencoding "github.com/tomsaalex/BitTorrent_Client/bencoding"
+	"github.com/tomsaalex/BitTorrent_Client/customdatatypes"
 )
 
-const ClientId = "TA"
-const ClientVersion = "0001"
+const clientID = "TA"
+const clientVersion = "0001"
 
+// TorrentClient - A representation of a bittorrent client that can handle multiple torrents at once.
 // MUST be initialized using the NewTorrentClient function below
 type TorrentClient struct {
-	PeerId        []byte
-	torrentParser Bencoding.TorrentParser
+	PeerID        customdatatypes.CustomHash
+	torrentParser torrentParser
 	torrents      []torrentHost
 }
 
@@ -44,25 +45,30 @@ func InitiateConnection() {
 }*/
 
 func NewTorrentClient() *TorrentClient {
-	return &TorrentClient{PeerId: generatePeerID()}
+	return &TorrentClient{PeerID: generatePeerID()}
 }
 
-func (tc *TorrentClient) AddTorrent(torrentFilePath string) {
+func (tc *TorrentClient) AddTorrent(torrentFilePath string) error {
 	newTorrentData, torrentParsingError := tc.torrentParser.ParseTorrentFile(torrentFilePath)
 
 	if torrentParsingError != nil {
-		panic(torrentParsingError)
+		return torrentParsingError
+	}
+	torrentStats, torrentStatsCreationError := NewTorrentStats(len(newTorrentData.PieceHashes))
+
+	if torrentStatsCreationError != nil {
+		return torrentStatsCreationError
 	}
 
-	newTorrentHost := NewTorrentHost(newTorrentData, TorrentStats{}, tc.PeerId)
+	newTorrentHost := NewTorrentHost(newTorrentData, torrentStats, tc.PeerID)
 	tc.torrents = append(tc.torrents, *newTorrentHost)
 
-	newTorrentHost.MakeRequestToTracker()
+	return nil
 }
 
-func generatePeerID() []byte {
+func generatePeerID() customdatatypes.CustomHash {
 	// Ensure the tag and version are correctly formatted
-	stringTag := fmt.Sprintf("-%s%s-", ClientId, ClientVersion)
+	stringTag := fmt.Sprintf("-%s%s-", clientID, clientVersion)
 	tag := []byte(stringTag)
 
 	// Generate a secure random byte sequence
@@ -84,5 +90,6 @@ func generatePeerID() []byte {
 	croppedRandomBytes := randomBytes[:12] // Ensure total length is 20
 
 	// Combine all parts to form the peer_id
-	return append(tag, croppedRandomBytes...)
+	peerID := append(tag, croppedRandomBytes...)
+	return customdatatypes.CustomHash{HashBytes: peerID}
 }

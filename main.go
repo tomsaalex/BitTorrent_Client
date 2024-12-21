@@ -1,40 +1,40 @@
 package main
 
 import (
-	"fmt"
+	"log/slog"
+	"os"
 	"strconv"
+	"sync"
 
-	Bencoding "github.com/tomsaalex/BitTorrent_Client/Bencoder"
-	"github.com/tomsaalex/BitTorrent_Client/Bencoder/ParsingErrors"
+	"github.com/tomsaalex/BitTorrent_Client/bencoding"
+	"github.com/tomsaalex/BitTorrent_Client/bencoding/bparserrs"
+	"github.com/tomsaalex/BitTorrent_Client/torrentclient"
 )
 
 func main() {
-	t := Bencoding.TorrentParser{}
-	//decodedValue, err := b.DecodeString("ld13:chill_examplell2:abi34ee3:abce2:xDi45ee3:loli-69ee")
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 
-	decodedValue, err := t.ParseTorrentFile("Harry Potter (Wizarding World) Series.torrent")
+	testTorrentClient := torrentclient.NewTorrentClient()
+	testTorrentClient.AddTorrent("Atherton - Rivers of Fire.mp3.torrent")
+	//testTorrentClient.AddTorrent("dummy.torrent")
 
-	if err != nil {
-		fmt.Print(err)
-	} else {
-		stringValue, err := stringifyBencodedValue(decodedValue)
-		if err != nil {
-			fmt.Print(err)
-		}
-		fmt.Print(stringValue)
-	}
+	// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	wg.Wait()
 }
 
-func stringifyBencodedValue(bencodedValue Bencoding.BencodedValue) (string, error) {
+func stringifyBencodedValue(bencodedValue bencoding.BencodableValue) (string, error) {
 	stringOutput := ""
 	switch castValue := bencodedValue.(type) {
-	case Bencoding.BencodedInt:
-		stringOutput = strconv.Itoa(castValue.IntValue)
-	case Bencoding.BencodedString:
-		stringOutput = castValue.StringValue
-	case Bencoding.BencodedList:
+	case bencoding.BencodableInt:
+		stringOutput = strconv.Itoa(castValue)
+	case bencoding.BencodableString:
+		stringOutput = castValue
+	case bencoding.BencodableList:
 		stringOutput += "{"
-		for _, value := range castValue.ListValue {
+		for _, value := range castValue {
 			stringValue, err := stringifyBencodedValue(value)
 			if err != nil {
 				return "", err
@@ -43,9 +43,9 @@ func stringifyBencodedValue(bencodedValue Bencoding.BencodedValue) (string, erro
 		}
 		stringOutput = stringOutput[:len(stringOutput)-2]
 		stringOutput += "}"
-	case Bencoding.BencodedMap:
+	case bencoding.BencodableMap:
 		stringOutput += "["
-		for key, value := range castValue.MapValue {
+		for key, value := range castValue {
 			stringValue, err := stringifyBencodedValue(value)
 			if err != nil {
 				return "", err
@@ -54,7 +54,7 @@ func stringifyBencodedValue(bencodedValue Bencoding.BencodedValue) (string, erro
 		}
 		stringOutput += "]"
 	default:
-		return "", &ParsingErrors.DecodingError{Message: "Argument isn't a known BencodedValue type"}
+		return "", &bparserrs.DecodingError{Message: "Argument isn't a known BencodedValue type"}
 	}
 	return stringOutput, nil
 }

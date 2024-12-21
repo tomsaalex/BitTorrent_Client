@@ -1,12 +1,11 @@
 package torrentclient
 
 import (
-	"bytes"
-	"fmt"
-	"net"
-	"strconv"
+	"context"
+	"log/slog"
+	"time"
 
-	Bencoding "github.com/tomsaalex/BitTorrent_Client/bencoding"
+	"github.com/tomsaalex/BitTorrent_Client/customdatatypes"
 )
 
 type TrackerEvent int
@@ -19,55 +18,111 @@ const (
 )
 
 type torrentHost struct {
-	torrentData  Bencoding.TorrentData
+	torrentData  TorrentData
 	torrentStats TorrentStats
 
-	peerID          []byte
-	trackConnection TrackerConnection
+	peerID                customdatatypes.CustomHash
+	trackConnection       trackerConnection
+	peerConnectionManager PeerConnectionManager
 }
 
-func (th *torrentHost) MakeRequestToTracker() {
-	trackerResponse, err := th.trackConnection.announceRequest(th.torrentData, th.torrentStats, th.peerID, T_STARTED)
+func (th *torrentHost) trackerManager(eventsChannel <-chan TrackerEvent, peerListChan chan<- []peer) {
+	var triggerChannel <-chan time.Time
 
-	if err != nil {
-		panic("This really shouldn't happen")
+	trackerInterval := -1
+
+	handleAnnounce := func(eventToExecute TrackerEvent) {
+		trackerResponse, err := th.trackConnection.announceRequest(th.torrentData, th.torrentStats, th.peerID, eventToExecute)
+		if err != nil {
+			panic(err) // TODO replace with proper error handling
+		}
+		if trackerInterval != trackerResponse.interval {
+			trackerInterval = trackerResponse.interval
+			triggerChannel = time.After(time.Duration(trackerInterval) * time.Second)
+		}
+
+		peerListChan <- trackerResponse.peers
 	}
 
-	testPeer := trackerResponse.peers[1]
-
-	pstr := "BitTorrent protocol"
-	var handshakeBuffer bytes.Buffer
-
-	reservedBytes := make([]byte, 8)
-	handshakeBuffer.WriteByte(byte(19))
-	handshakeBuffer.WriteString(pstr)
-	handshakeBuffer.Write(reservedBytes)
-	handshakeBuffer.Write(th.torrentData.Infohash.HashBytes)
-	handshakeBuffer.Write(th.peerID)
-
-	encodedHandshake := handshakeBuffer.Bytes()
-	connectAddress := testPeer.ip + ":" + strconv.Itoa(int(testPeer.port))
-
-	response := make([]byte, 100)
-	peerConn, err := net.Dial("tcp", connectAddress)
-	if err != nil {
-		fmt.Println("Error:", err)
-		return
+	for {
+		select {
+		case eventToExecute := <-eventsChannel:
+			handleAnnounce(eventToExecute)
+		case <-triggerChannel:
+			handleAnnounce(T_NIL)
+		}
 	}
-	defer peerConn.Close()
-
-	peerConn.Write(encodedHandshake)
-
-	numBRead, readErr := peerConn.Read(response)
-
-	if readErr != nil {
-		panic("This really shouldn't have happened")
-	}
-
-	fmt.Printf("Read %d bytes", numBRead)
-	fmt.Printf(string(response))
 }
 
-func NewTorrentHost(torrentData Bencoding.TorrentData, torrentStats TorrentStats, peerID []byte) *torrentHost {
-	return &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID}
+func (th *torrentHost) torrentManager() {
+	slog.LogAttrs(
+		context.Background(),
+		slog.LevelInfo,
+		"Started",
+		slog.String("method", "torrentManager"),
+	)
+	centralPeerList := make([]peer, 0)
+
+	trackerEventsChannel := make(chan TrackerEvent)
+	peerListChannel := make(chan []peer)
+
+	peersToConnectChan := make(chan []peer)
+	peerRequestChan := make(chan bool)
+
+	newPieceAcquiredChan := make(chan piece)
+	bitfieldOutputChan := make(chan customdatatypes.FixedSizeBitfield)
+	bitfieldRequestChan := make(chan bool)
+
+	go th.trackerManager(trackerEventsChannel, peerListChannel)
+	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, newPieceAcquiredChan, bitfieldRequestChan, bitfieldOutputChan)
+
+	trackerEventsChannel <- T_STARTED
+
+	for {
+		select {
+		case centralPeerList = <-peerListChannel:
+			// TODO: it's debatable whether this is a good idea. We don't really need both ways to send the peers, I don't think?
+			peersToConnectChan <- centralPeerList
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelInfo,
+				"Sent new peers to connection manager",
+				slog.String("method", "torrentManager"),
+				slog.Int("peerCount", len(centralPeerList)),
+			)
+		case <-peerRequestChan:
+			peersToConnectChan <- centralPeerList
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelInfo,
+				"Sent new peers to connection manager",
+				slog.String("method", "torrentManager"),
+				slog.Int("peerCount", len(centralPeerList)),
+			)
+		case <-bitfieldRequestChan:
+			bitfieldOutputChan <- th.torrentStats.pieceIndex
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelInfo,
+				"Sent bitfield to connection manager",
+				slog.String("method", "torrentManager"),
+			)
+		case newPiece := <-newPieceAcquiredChan:
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelInfo,
+				"Received piece",
+				slog.Int("Piece number", newPiece.pieceIndex),
+				slog.String("method", "torrentManager"),
+			)
+		}
+	}
+}
+
+func NewTorrentHost(torrentData TorrentData, torrentStats TorrentStats, peerID customdatatypes.CustomHash) *torrentHost {
+	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID}
+
+	go newTorrent.torrentManager()
+
+	return newTorrent
 }

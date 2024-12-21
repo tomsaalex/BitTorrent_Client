@@ -1,4 +1,4 @@
-package comm_errors
+package torrentclient
 
 import "fmt"
 
@@ -7,5 +7,5 @@ type TrackerConnectionError struct {
 }
 
 func (tce *TrackerConnectionError) Error() string {
-	return fmt.Sprintf("MalformedTorrentError: %s", tce.Message)
+	return fmt.Sprintf("TrackerConnectionError: %s", tce.Message)
 }

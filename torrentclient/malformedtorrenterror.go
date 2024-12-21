@@ -1,4 +1,4 @@
-package TorrentParsingErrors
+package torrentclient
 
 import "fmt"
 
