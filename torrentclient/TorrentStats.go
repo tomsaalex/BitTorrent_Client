@@ -10,6 +10,19 @@ type TorrentStats struct {
 	unselectedPieces []int
 }
 
+func (ts *TorrentStats) MarkPieceAsObtained(pIndex int) {
+	ts.pieceIndex.SetBit(pIndex)
+
+	posToRem := -1
+	for i := 0; i < len(ts.unselectedPieces); i++ {
+		if ts.unselectedPieces[i] == pIndex {
+			posToRem = i
+		}
+	}
+
+	ts.unselectedPieces = append(ts.unselectedPieces[:posToRem], ts.unselectedPieces[posToRem+1:]...)
+}
+
 func NewTorrentStats(pieceCount int) (TorrentStats, error) {
 	bitfield, err := customdatatypes.NewFixedSizeBitfield(pieceCount)
 	unselectedPieces := bitfield.GetUnsetBitsIndices()

@@ -16,8 +16,8 @@ func main() {
 	slog.SetDefault(logger)
 
 	testTorrentClient := torrentclient.NewTorrentClient()
-	testTorrentClient.AddTorrent("Atherton - Rivers of Fire.mp3.torrent")
-	//testTorrentClient.AddTorrent("dummy.torrent")
+	//testTorrentClient.AddTorrent("Atherton - Rivers of Fire.mp3.torrent")
+	testTorrentClient.AddTorrent("dummy.torrent")
 
 	// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
 	var wg sync.WaitGroup

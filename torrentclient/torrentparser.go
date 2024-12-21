@@ -105,7 +105,9 @@ func (tp *torrentParser) extractTorrentData(rawTorrentData bencoding.BencodableV
 	for i := 0; i < len(piecesString); i++ {
 		buf.WriteByte(piecesString[i])
 		if buf.Len() == 20 {
-			newTorrentData.PieceHashes = append(newTorrentData.PieceHashes, customdatatypes.CustomHash{HashBytes: buf.Bytes()})
+			bufCopy := make([]byte, buf.Len())
+			copy(bufCopy, buf.Bytes())
+			newTorrentData.PieceHashes = append(newTorrentData.PieceHashes, customdatatypes.CustomHash{HashBytes: bufCopy})
 			buf.Reset()
 		}
 	}

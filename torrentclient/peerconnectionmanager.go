@@ -130,6 +130,7 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 				slog.Int("pieceIndex", receivedPiece.pieceIndex),
 			)
 			newPieceAcquiredChan <- receivedPiece
+			tStats.MarkPieceAsObtained(receivedPiece.pieceIndex)
 			if len(requestedPieces) == 0 {
 				pcm.schedulePiecesForDownload(requestedPieces, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
@@ -299,6 +300,10 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces []Bl
 	// TODO: This somehow starts running while the bitfield isn't loaded? It goes into an infinite loop still. Check
 	for i := 0; i < numPieces; i++ {
 		scheduleSuccessful := false
+
+		if len(tStats.unselectedPieces) == 0 {
+			return
+		}
 
 		for !scheduleSuccessful {
 			randomIndex := rand.IntN(len(tStats.unselectedPieces))
