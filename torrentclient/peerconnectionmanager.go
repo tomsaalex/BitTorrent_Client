@@ -109,7 +109,7 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			}
 			pcm.establishConnections(unconnectedPeers, torrentData, peerID, connectionOutput)
 			if len(requestedPieces) == 0 {
-				pcm.schedulePiecesForDownload(requestedPieces, tStats, piecesDownloadNum, torrentData.PieceLength)
+				pcm.schedulePiecesForDownload(requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
 		case receivedMessage := <-connectionOutput:
 			rawMessage := receivedMessage.peerMsg
@@ -132,7 +132,7 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			newPieceAcquiredChan <- receivedPiece
 			tStats.MarkPieceAsObtained(receivedPiece.pieceIndex)
 			if len(requestedPieces) == 0 {
-				pcm.schedulePiecesForDownload(requestedPieces, tStats, piecesDownloadNum, torrentData.PieceLength)
+				pcm.schedulePiecesForDownload(requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
 		case <-regularUnchokeTicker.C:
 			slog.LogAttrs(
@@ -144,7 +144,7 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			// TODO Replace peer after you implement optimistic unchoking
 			pcm.changeUnchokedDownloaders(peer{}, requestedPieces)
 			if len(requestedPieces) == 0 {
-				pcm.schedulePiecesForDownload(requestedPieces, tStats, piecesDownloadNum, torrentData.PieceLength)
+				pcm.schedulePiecesForDownload(requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
 			/* case <-regularPieceScheduleTicker.C:
 			if len(requestedPieces) == 0 {
@@ -168,10 +168,18 @@ func (pcm *PeerConnectionManager) pieceAssembler(tData TorrentData, blockInput <
 			_, exists := pieceCatalogue[pieceIndex]
 
 			if !exists {
-				pieceData := make([]byte, tData.PieceLength)
-				pieceCatalogue[pieceIndex] = pieceData
 
-				bitfield, err := customdatatypes.NewFixedSizeBitfield(tData.PieceLength)
+				// TODO: This only works assuming one file per torrent, maybe?
+				var pieceLength int
+				if pieceIndex == len(tData.PieceHashes)-1 {
+					pieceLength = tData.FileLength % tData.PieceLength
+				} else {
+					pieceLength = tData.PieceLength
+				}
+
+				pieceData := make([]byte, pieceLength)
+				pieceCatalogue[pieceIndex] = pieceData
+				bitfield, err := customdatatypes.NewFixedSizeBitfield(pieceLength)
 				if err != nil {
 					// TODO: Better error handling here, although the error is technically impossible
 					panic(err)
@@ -293,11 +301,7 @@ func (pcm *PeerConnectionManager) cancelRequestsToConnection(blockRequests []Blo
 	return validRequests
 }
 
-func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces []BlockRequest, tStats *TorrentStats, numPieces, pieceLength int) {
-	// TODO Perhaps it's not okay to just ignore the peers that are choking us without sending an interested message
-	// Check with protocol to decide how to improve this function.
-
-	// TODO: This somehow starts running while the bitfield isn't loaded? It goes into an infinite loop still. Check
+func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces []BlockRequest, tData *TorrentData, tStats *TorrentStats, numPieces, pieceLength int) {
 	for i := 0; i < numPieces; i++ {
 		scheduleSuccessful := false
 
@@ -326,7 +330,7 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces []Bl
 						continue
 					}
 					anyConnAvailable = true
-					newRequests := pcm.generateBlockRequests(conn, pieceIndex, pieceLength)
+					newRequests := pcm.generateBlockRequests(tData, pieceIndex, pieceLength)
 
 					for _, req := range newRequests {
 						requestedPieces = append(requestedPieces, req)
@@ -345,14 +349,30 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces []Bl
 	}
 }
 
-func (pcm *PeerConnectionManager) generateBlockRequests(peerConn peerConnection, pieceIndex, pieceLength int) []BlockRequest {
+func (pcm *PeerConnectionManager) generateBlockRequests(tData *TorrentData, pieceIndex, pieceLength int) []BlockRequest {
+	// TODO: ALL OF THIS assumes one file per torrent.
 	begin := 0
+	isLastPiece := len(tData.PieceHashes)-1 == pieceIndex
+
+	if isLastPiece {
+		pieceLength = tData.FileLength % pieceLength
+	}
+
 	blockCount := pieceLength / blockSize
+	remainderData := pieceLength % blockSize
+	if remainderData != 0 {
+		blockCount++
+	}
 
 	newRequests := make([]BlockRequest, 0)
 
 	for i := 0; i < blockCount; i++ {
-		req := BlockRequest{pieceIndex: pieceIndex, blockStart: begin, blockLength: blockSize}
+		var req BlockRequest
+		if remainderData != 0 && i == blockCount-1 {
+			req = BlockRequest{pieceIndex: pieceIndex, blockStart: begin, blockLength: remainderData}
+		} else {
+			req = BlockRequest{pieceIndex: pieceIndex, blockStart: begin, blockLength: blockSize}
+		}
 		newRequests = append(newRequests, req)
 		begin += blockSize
 	}

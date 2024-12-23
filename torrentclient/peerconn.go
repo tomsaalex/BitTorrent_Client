@@ -655,8 +655,7 @@ func (pc *peerConnection) sendRequest(index, begin, length int) error {
 	// length represents the size of the block we are requesting.
 	// There is debate around the appropriate size, but 16 KB seems to be a good number
 	lengthBuf := make([]byte, 4)
-	// TODO: Make sure this doesn't backfire in case a piece size isn't divisible by 16 KB
-	binary.BigEndian.PutUint32(lengthBuf, uint32(16384))
+	binary.BigEndian.PutUint32(lengthBuf, uint32(length))
 
 	var requestBuffer bytes.Buffer
 

@@ -73,9 +73,11 @@ func (th *torrentHost) torrentManager() {
 	bitfieldOutputChan := make(chan customdatatypes.FixedSizeBitfield)
 	bitfieldRequestChan := make(chan bool)
 
+	pieceToWriter := make(chan piece)
+
 	go th.trackerManager(trackerEventsChannel, peerListChannel)
 	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, newPieceAcquiredChan, bitfieldRequestChan, bitfieldOutputChan)
-
+	go fileWriter(pieceToWriter, &th.torrentData)
 	trackerEventsChannel <- T_STARTED
 
 	for {
@@ -115,6 +117,8 @@ func (th *torrentHost) torrentManager() {
 				slog.Int("Piece number", newPiece.pieceIndex),
 				slog.String("method", "torrentManager"),
 			)
+
+			pieceToWriter <- newPiece
 		}
 	}
 }

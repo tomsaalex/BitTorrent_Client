@@ -17,7 +17,9 @@ func main() {
 
 	testTorrentClient := torrentclient.NewTorrentClient()
 	//testTorrentClient.AddTorrent("Atherton - Rivers of Fire.mp3.torrent")
-	testTorrentClient.AddTorrent("dummy.torrent")
+	//testTorrentClient.AddTorrent("dummy.torrent")
+	//testTorrentClient.AddTorrent("dummy_pic.png.torrent")
+	testTorrentClient.AddTorrent("264661516_125653449911097_1362215899871345200_n.jpg.torrent")
 
 	// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
 	var wg sync.WaitGroup
