@@ -12,7 +12,7 @@ import (
 	"github.com/tomsaalex/BitTorrent_Client/customdatatypes"
 )
 
-const piecesDownloadNum int = 1
+const piecesDownloadNum int = 20
 const downloadersNum int = 4
 const unchokingInterval time.Duration = 10 * time.Second
 const optimisticUnchokingInterval time.Duration = 30 * time.Second
@@ -28,8 +28,8 @@ func newPeerConnectionManager() *PeerConnectionManager {
 	return &PeerConnectionManager{peerConnections: peerConnections}
 }
 
-func (pcm *PeerConnectionManager) establishConnection(peer peer, tData TorrentData, connectionOutput chan connMessage, peerID customdatatypes.CustomHash) (peerConnection, error) {
-	newConnection, err := newPeerConnection(peer, tData, connectionOutput)
+func (pcm *PeerConnectionManager) establishConnection(peer peer, tData TorrentData, connectionOutput chan connMessage, peerID customdatatypes.CustomHash, assemblerInput chan pieceMessage) (peerConnection, error) {
+	newConnection, err := newPeerConnection(peer, tData, connectionOutput, assemblerInput)
 
 	if err != nil {
 		return peerConnection{}, err
@@ -44,9 +44,9 @@ func (pcm *PeerConnectionManager) establishConnection(peer peer, tData TorrentDa
 	return newConnection, nil
 }
 
-func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData TorrentData, peerID customdatatypes.CustomHash, connectionOutput chan connMessage) {
+func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData TorrentData, peerID customdatatypes.CustomHash, connectionOutput chan connMessage, assemblerInput chan pieceMessage) {
 	for _, peer := range peersList {
-		peerConnection, err := pcm.establishConnection(peer, tData, connectionOutput, peerID)
+		peerConnection, err := pcm.establishConnection(peer, tData, connectionOutput, peerID, assemblerInput)
 
 		if err != nil {
 			slog.LogAttrs(
@@ -59,11 +59,13 @@ func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData T
 
 		pcm.peerConnections = append(pcm.peerConnections, peerConnection)
 
-		go peerConnection.connectionRoutine()
+		// TODO: Replace this with method that will launch the connection's 3 goroutines.
+		//go peerConnection.connectionRoutine()
+		peerConnection.launchConnectionRoutines()
 	}
 }
 
-func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, newPieceAcquiredChan chan<- piece, bitfieldRequestChan chan<- bool, bitfieldOutputChan <-chan customdatatypes.FixedSizeBitfield) {
+func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, newPieceAcquiredChan chan<- piece, bitfieldRequestChan chan<- bool, bitfieldOutputChan <-chan customdatatypes.FixedSizeBitfield, torrentDownloadComplete chan<- bool) {
 	peerRequestChan <- true
 
 	connectionOutput := make(chan connMessage)
@@ -107,15 +109,24 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 					unconnectedPeers = append(unconnectedPeers, peer)
 				}
 			}
-			pcm.establishConnections(unconnectedPeers, torrentData, peerID, connectionOutput)
+			pcm.establishConnections(unconnectedPeers, torrentData, peerID, connectionOutput, assemblerInput)
 			if len(requestedPieces) == 0 {
-				pcm.schedulePiecesForDownload(requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
+				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
 		case receivedMessage := <-connectionOutput:
 			rawMessage := receivedMessage.peerMsg
 			switch peerMessage := rawMessage.(type) {
 			case pieceMessage:
-				assemblerInput <- peerMessage
+				// Remove the piece from the list of requested blocks.
+				for i := len(requestedPieces) - 1; i >= 0; i-- {
+					if requestedPieces[i].pieceIndex == peerMessage.index && requestedPieces[i].blockStart == peerMessage.begin {
+						requestedPieces = append(requestedPieces[:i], requestedPieces[i+1:]...)
+					}
+				}
+
+				if len(requestedPieces) != piecesDownloadNum {
+					pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
+				}
 			case requestMessage:
 				// TODO: Add this when you implement uploading content
 			case cancelMessage:
@@ -129,10 +140,14 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 				slog.String("method", "connectionManager"),
 				slog.Int("pieceIndex", receivedPiece.pieceIndex),
 			)
+
 			newPieceAcquiredChan <- receivedPiece
 			tStats.MarkPieceAsObtained(receivedPiece.pieceIndex)
+			if tStats.pieceIndex.IsFull() {
+				torrentDownloadComplete <- true
+			}
 			if len(requestedPieces) == 0 {
-				pcm.schedulePiecesForDownload(requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
+				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
 		case <-regularUnchokeTicker.C:
 			slog.LogAttrs(
@@ -144,7 +159,7 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			// TODO Replace peer after you implement optimistic unchoking
 			pcm.changeUnchokedDownloaders(peer{}, requestedPieces)
 			if len(requestedPieces) == 0 {
-				pcm.schedulePiecesForDownload(requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
+				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
 			/* case <-regularPieceScheduleTicker.C:
 			if len(requestedPieces) == 0 {
@@ -190,7 +205,7 @@ func (pcm *PeerConnectionManager) pieceAssembler(tData TorrentData, blockInput <
 
 			for i := 0; i < len(newBlock.block); i++ {
 				pieceCatalogue[pieceIndex][i+blockOffset] = blockData[i]
-				changesCatalogue[pieceIndex].SetBit(i)
+				changesCatalogue[pieceIndex].SetBit(i + blockOffset)
 			}
 
 			if changesCatalogue[pieceIndex].IsFull() {
@@ -301,7 +316,7 @@ func (pcm *PeerConnectionManager) cancelRequestsToConnection(blockRequests []Blo
 	return validRequests
 }
 
-func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces []BlockRequest, tData *TorrentData, tStats *TorrentStats, numPieces, pieceLength int) {
+func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces *[]BlockRequest, tData *TorrentData, tStats *TorrentStats, numPieces, pieceLength int) {
 	for i := 0; i < numPieces; i++ {
 		scheduleSuccessful := false
 
@@ -313,6 +328,30 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces []Bl
 			randomIndex := rand.IntN(len(tStats.unselectedPieces))
 			pieceIndex := tStats.unselectedPieces[randomIndex]
 
+			// TODO: THIS ENTIRE MARKED SECTION IS NOT PROPERLY DONE
+			// There are situations where you would want to re-request pieces, but that involves
+			// proper tracking of requested pieces and a timeout for when to request them.
+			// Redo soon
+			pieceInProgress := false
+			for _, p := range tStats.requestedPieces {
+				if p == pieceIndex {
+					pieceInProgress = true
+					break
+				}
+			}
+			if pieceInProgress {
+				break
+			}
+			for _, rp := range *requestedPieces {
+				if rp.pieceIndex == pieceIndex {
+					pieceInProgress = true
+					break
+				}
+			}
+			if pieceInProgress {
+				break
+			}
+			/////////////////////////////////////////////////////////
 			anyConnAvailable := false
 			for _, conn := range pcm.peerConnections {
 				conn.connDataRequests <- true
@@ -333,9 +372,11 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces []Bl
 					newRequests := pcm.generateBlockRequests(tData, pieceIndex, pieceLength)
 
 					for _, req := range newRequests {
-						requestedPieces = append(requestedPieces, req)
+						*requestedPieces = append(*requestedPieces, req)
 						conn.input <- requestMessage{index: req.pieceIndex, begin: req.blockStart, length: req.blockLength}
 					}
+
+					tStats.MarkPieceAsRequested(pieceIndex)
 
 					scheduleSuccessful = true
 					break

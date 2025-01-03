@@ -20,6 +20,15 @@ const KEEP_ALIVE_TIME = time.Second * 110
 
 const CONNECTION_SPEED_UPDATE_TIME = time.Second
 
+type StateUpdateType int
+
+const (
+	Choked StateUpdateType = iota
+	Unchoked
+	Interested
+	NotInterested
+)
+
 type connData struct {
 	amChoking      bool
 	amInterested   bool
@@ -42,8 +51,9 @@ type peerConnection struct {
 	dataTransferSpeed         int
 	dataTransferSpeedSnapshot int // To have a stable value while sorting
 
-	input  chan peerMessage
-	output chan connMessage
+	input          chan peerMessage
+	output         chan connMessage
+	assemblerInput chan pieceMessage
 
 	connDataRequests chan bool
 	connDataReplies  chan connData
@@ -55,7 +65,7 @@ type peerConnection struct {
 	speedReplies  chan int
 }
 
-func newPeerConnection(peer peer, td TorrentData, output chan connMessage) (peerConnection, error) {
+func newPeerConnection(peer peer, td TorrentData, output chan connMessage, assemblerInput chan pieceMessage) (peerConnection, error) {
 	connectAddress := peer.ip + ":" + strconv.Itoa(int(peer.port))
 
 	conn, err := net.Dial("tcp", connectAddress)
@@ -72,7 +82,7 @@ func newPeerConnection(peer peer, td TorrentData, output chan connMessage) (peer
 	speedRequests := make(chan bool)
 	speedReplies := make(chan int)
 
-	peerConnection := peerConnection{otherPeer: peer, connection: conn, pieceCount: len(td.PieceHashes), input: input, output: output, connDataRequests: cdRequests, connDataReplies: cdReplies, pieceCheck: pieceCheck, pieceStatus: pieceStatus, speedRequests: speedRequests, speedReplies: speedReplies}
+	peerConnection := peerConnection{otherPeer: peer, connection: conn, pieceCount: len(td.PieceHashes), input: input, output: output, assemblerInput: assemblerInput, connDataRequests: cdRequests, connDataReplies: cdReplies, pieceCheck: pieceCheck, pieceStatus: pieceStatus, speedRequests: speedRequests, speedReplies: speedReplies}
 	return peerConnection, nil
 }
 
@@ -101,6 +111,145 @@ func calcConnectionSpeed(dataPoints []int) int {
 
 	// We're working with byte counts here, so we can afford to round without losing anything significant
 	return rollingAverage / len(dataPoints)
+}
+
+func (pc *peerConnection) launchConnectionRoutines() {
+	forwarderStateUpdater := make(chan StateUpdateType)
+	receiverStateUpdater := make(chan StateUpdateType)
+
+	receiverPeerIndexUpdater := make(chan int)
+	downloadDataRateUpdater := make(chan int)
+
+	peerBitfieldUpdater := make(chan []byte)
+
+	go pc.connDataManager(forwarderStateUpdater, receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater)
+	go pc.forwarderController(forwarderStateUpdater)
+	go pc.receiverController(receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater)
+}
+
+func (pc *peerConnection) forwarderController(stateUpdater chan<- StateUpdateType) {
+	toForwarder := make(chan peerMessage)
+
+	go pc.forwarderRoutine(toForwarder)
+
+	for {
+		select {
+		case rawMessage := <-pc.input:
+			toForwarder <- rawMessage
+			// TODO: Should really quantify the amount of data sent in the connDataManager routine
+			switch rawMessage.(type) {
+			case chokeMessage:
+				stateUpdater <- Choked
+			case unchokeMessage:
+				stateUpdater <- Unchoked
+			case interestedMessage:
+				stateUpdater <- Interested
+			case notInterestedMessage:
+				stateUpdater <- NotInterested
+			}
+		}
+	}
+}
+
+func (pc *peerConnection) receiverController(stateUpdater chan<- StateUpdateType, peerIndexUpdate chan<- int, dataRateUpdate chan<- int, peerBitfieldUpdate chan<- []byte) {
+	receiverOutput := make(chan peerMessage)
+
+	go pc.receiverRoutine(receiverOutput)
+
+	for {
+		select {
+		case rawMessage := <-receiverOutput:
+			/* TODO: Perhaps I shouldn't be accepting all traffic, but some traffic needs to go through still
+			 if cd.amChoking {
+				continue
+			} */
+			switch peerMessage := rawMessage.(type) {
+			case chokeMessage:
+				stateUpdater <- Choked
+			case unchokeMessage:
+				stateUpdater <- Unchoked
+			case interestedMessage:
+				stateUpdater <- Interested
+			case notInterestedMessage:
+				stateUpdater <- NotInterested
+			case haveMessage:
+				peerIndexUpdate <- peerMessage.pieceIndex
+			case pieceMessage:
+				pc.assemblerInput <- peerMessage
+				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
+				dataRateUpdate <- len(peerMessage.block)
+			case requestMessage:
+				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
+			case cancelMessage:
+				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
+			case bitfieldMessage:
+				peerBitfieldUpdate <- peerMessage.bitfield
+			}
+		}
+	}
+}
+
+func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdateType, receiverStateUpdate <-chan StateUpdateType, peerIndexUpdate <-chan int, receiverDataRateUpdate <-chan int, peerBitfieldUpdate <-chan []byte) {
+	downloadDataCounter := 0
+	downloadRates := make([]int, 100)
+
+	dataRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
+
+	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
+	peerBitfield, err := pc.createRemotePeerBitfield()
+
+	if err != nil {
+		// TODO: Handle this more elegantly somehow. It's technically an impossible error, but we still don't want to crash.
+		panic(err)
+	}
+
+	for {
+		select {
+		case updateType := <-forwarderStateUpdate:
+			switch updateType {
+			case Choked:
+				cd.amChoking = true
+			case Unchoked:
+				cd.amChoking = false
+			case Interested:
+				cd.amInterested = true
+			case NotInterested:
+				cd.amInterested = false
+			}
+		case updateType := <-receiverStateUpdate:
+			switch updateType {
+			case Choked:
+				cd.peerChoking = true
+			case Unchoked:
+				cd.peerChoking = false
+			case Interested:
+				cd.peerInterested = true
+			case NotInterested:
+				cd.peerInterested = false
+			}
+		case newHas := <-peerIndexUpdate:
+			peerBitfield.SetBit(newHas)
+		case dataReport := <-receiverDataRateUpdate:
+			downloadDataCounter += dataReport
+		case <-pc.connDataRequests:
+			pc.connDataReplies <- cd
+		case index := <-pc.pieceCheck:
+			pieceCheckResult, _ := peerBitfield.IsSet(index)
+			pc.pieceStatus <- pieceCheckResult
+		case <-pc.speedRequests:
+			pc.speedReplies <- pc.dataTransferSpeed
+		case <-dataRateTicker.C:
+			downloadRates = addDataPoint(downloadRates, downloadDataCounter)
+			pc.dataTransferSpeed = calcConnectionSpeed(downloadRates)
+			downloadDataCounter = 0
+		case bitfield := <-peerBitfieldUpdate:
+			// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
+			err := peerBitfield.ImportBitfield(bitfield)
+			if err != nil {
+				// TODO: DROP CONNECTION
+			}
+		}
+	}
 }
 
 func (pc *peerConnection) connectionRoutine() {
@@ -298,10 +447,10 @@ func (pc *peerConnection) receiverRoutine(msgOutput chan<- peerMessage) {
 	buffcon := bufio.NewReader(pc.connection)
 
 	for {
-		// TODO Perhaps we shouldn't even be accepting data from choked peers?
+		// TODO: Perhaps we shouldn't even be accepting data from choked peers?
 		peerMessage, err := pc.receiveMessage(buffcon)
 		if err != nil {
-			// TODO Handle this more nicely, though idk how, cause this is in a goroutine
+			// TODO: Handle this more nicely, though idk how, cause this is in a goroutine
 			panic(err)
 		}
 		msgOutput <- peerMessage

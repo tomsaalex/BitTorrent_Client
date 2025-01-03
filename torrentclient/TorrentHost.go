@@ -75,8 +75,10 @@ func (th *torrentHost) torrentManager() {
 
 	pieceToWriter := make(chan piece)
 
+	torrentDownloadComplete := make(chan bool)
+
 	go th.trackerManager(trackerEventsChannel, peerListChannel)
-	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, newPieceAcquiredChan, bitfieldRequestChan, bitfieldOutputChan)
+	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, newPieceAcquiredChan, bitfieldRequestChan, bitfieldOutputChan, torrentDownloadComplete)
 	go fileWriter(pieceToWriter, &th.torrentData)
 	trackerEventsChannel <- T_STARTED
 
@@ -119,6 +121,14 @@ func (th *torrentHost) torrentManager() {
 			)
 
 			pieceToWriter <- newPiece
+		case <-torrentDownloadComplete:
+			// TODO: This doesn't take into account storing the files on the disk. It just tells you that all the pieces are downloaded and were sent to the torrent host.
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelInfo,
+				"FILE DOWNLOAD COMPLETE",
+				slog.String("method", "torrentManager"),
+			)
 		}
 	}
 }

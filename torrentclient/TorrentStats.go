@@ -6,7 +6,9 @@ type TorrentStats struct {
 	uploadedBytes   int
 	downloadedBytes int
 
-	pieceIndex       customdatatypes.FixedSizeBitfield
+	pieceIndex customdatatypes.FixedSizeBitfield
+
+	requestedPieces  []int
 	unselectedPieces []int
 }
 
@@ -19,8 +21,20 @@ func (ts *TorrentStats) MarkPieceAsObtained(pIndex int) {
 			posToRem = i
 		}
 	}
+	if posToRem != -1 {
+		// TODO: This is technically impossible, but there's a bug somewhere that causes pieces to be requested multiple times. Remove this check after that is fixed.
+		ts.unselectedPieces = append(ts.unselectedPieces[:posToRem], ts.unselectedPieces[posToRem+1:]...)
 
-	ts.unselectedPieces = append(ts.unselectedPieces[:posToRem], ts.unselectedPieces[posToRem+1:]...)
+		for i := len(ts.requestedPieces) - 1; i >= 0; i-- {
+			if ts.requestedPieces[i] == pIndex {
+				ts.requestedPieces = append(ts.requestedPieces[:i], ts.requestedPieces[i+1:]...)
+			}
+		}
+	}
+}
+
+func (ts *TorrentStats) MarkPieceAsRequested(pIndex int) {
+	ts.requestedPieces = append(ts.requestedPieces, pIndex)
 }
 
 func NewTorrentStats(pieceCount int) (TorrentStats, error) {
