@@ -451,7 +451,14 @@ func (pc *peerConnection) receiverRoutine(msgOutput chan<- peerMessage) {
 		peerMessage, err := pc.receiveMessage(buffcon)
 		if err != nil {
 			// TODO: Handle this more nicely, though idk how, cause this is in a goroutine
-			panic(err)
+			//panic(err)
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelError,
+				"Error receiving message from remote peer. Connection dropped.",
+				slog.String("peerIP", pc.otherPeer.ip),
+				slog.Int("PeerPort", int(pc.otherPeer.port)),
+			)
 		}
 		msgOutput <- peerMessage
 	}

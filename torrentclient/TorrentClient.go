@@ -16,7 +16,7 @@ const clientVersion = "0001"
 // MUST be initialized using the NewTorrentClient function below
 type TorrentClient struct {
 	PeerID        customdatatypes.CustomHash
-	torrentParser torrentParser
+	torrentParser TorrentParser
 	torrents      []torrentHost
 }
 

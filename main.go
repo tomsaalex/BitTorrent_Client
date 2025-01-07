@@ -16,16 +16,29 @@ func main() {
 	slog.SetDefault(logger)
 
 	testTorrentClient := torrentclient.NewTorrentClient()
-	testTorrentClient.AddTorrent("Atherton - Rivers of Fire.mp3.torrent")
+	//testTorrentClient.AddTorrent("Atherton - Rivers of Fire.mp3.torrent")
 	//testTorrentClient.AddTorrent("dummy.torrent")
 	//testTorrentClient.AddTorrent("dummy_pic.png.torrent")
 	//testTorrentClient.AddTorrent("264661516_125653449911097_1362215899871345200_n.jpg.torrent")
 	//testTorrentClient.AddTorrent("deer_pic.jpeg.torrent")
+	testTorrentClient.AddTorrent("multi-file-torrent-test.torrent")
 
 	// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	wg.Wait()
+
+	/*var torrentParser torrentclient.TorrentParser
+	torrentData, err := torrentParser.ParseTorrentFile("multi-file-torrent-test.torrent")
+	if err != nil {
+		panic(err)
+	}
+
+	testPiece := torrentclient.NewPiece(0, make([]byte, 32768))
+
+	var dManager torrentclient.DiskManager
+	pieceMappings := dManager.MapPieceToFiles(testPiece, &torrentData)
+	fmt.Print(pieceMappings)*/
 }
 
 func stringifyBencodedValue(bencodedValue bencoding.BencodableValue) (string, error) {

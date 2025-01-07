@@ -20,7 +20,8 @@ type TorrentData struct {
 	FileLength int
 
 	// Multiple File Mode
-	Files []FileData
+	Files       []FileData
+	TorrentSize int // Not in the specification, just added to not have to calculate it everytime
 
 	// Fields outside metadata file
 	Infohash customdatatypes.CustomHash

@@ -59,8 +59,6 @@ func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData T
 
 		pcm.peerConnections = append(pcm.peerConnections, peerConnection)
 
-		// TODO: Replace this with method that will launch the connection's 3 goroutines.
-		//go peerConnection.connectionRoutine()
 		peerConnection.launchConnectionRoutines()
 	}
 }
@@ -72,11 +70,7 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 
 	requestedPieces := make([]BlockRequest, 0)
 
-	// TODO: The problem might be here. The unchoke code never executes, even if we have a channel that triggers it right away.
 	regularUnchokeTicker := time.NewTicker(10 * time.Second)
-
-	/* // TODO: This is not in the specification.
-	regularPieceScheduleTicker := time.NewTicker(5 * time.Second) */
 
 	assemblerInput := make(chan pieceMessage)
 	assemblerOutput := make(chan piece)
@@ -156,15 +150,11 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 				"Peer change start",
 				slog.String("method", "connectionManager"),
 			)
-			// TODO Replace peer after you implement optimistic unchoking
+			// TODO Replace peer{} after you implement optimistic unchoking
 			pcm.changeUnchokedDownloaders(peer{}, requestedPieces)
 			if len(requestedPieces) == 0 {
 				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
-			/* case <-regularPieceScheduleTicker.C:
-			if len(requestedPieces) == 0 {
-				pcm.schedulePiecesForDownload(requestedPieces, tStats, piecesDownloadNum, torrentData.PieceLength)
-			} */
 		}
 	}
 }
@@ -173,59 +163,64 @@ func (pcm *PeerConnectionManager) pieceAssembler(tData TorrentData, blockInput <
 	pieceCatalogue := make(map[int][]byte)
 	changesCatalogue := make(map[int]*customdatatypes.FixedSizeBitfield)
 
-	for {
-		select {
-		case newBlock := <-blockInput:
-			pieceIndex := newBlock.index
-			blockOffset := newBlock.begin
-			blockData := newBlock.block
+	for newBlock := range blockInput {
+		pieceIndex := newBlock.index
+		blockOffset := newBlock.begin
+		blockData := newBlock.block
 
-			_, exists := pieceCatalogue[pieceIndex]
+		_, exists := pieceCatalogue[pieceIndex]
 
-			if !exists {
+		if !exists {
+			var pieceLength int
+			var torrentLength int
 
-				// TODO: This only works assuming one file per torrent, maybe?
-				var pieceLength int
-				if pieceIndex == len(tData.PieceHashes)-1 {
-					pieceLength = tData.FileLength % tData.PieceLength
-				} else {
-					pieceLength = tData.PieceLength
-				}
-
-				pieceData := make([]byte, pieceLength)
-				pieceCatalogue[pieceIndex] = pieceData
-				bitfield, err := customdatatypes.NewFixedSizeBitfield(pieceLength)
-				if err != nil {
-					// TODO: Better error handling here, although the error is technically impossible
-					panic(err)
-				}
-
-				changesCatalogue[pieceIndex] = bitfield
+			if len(tData.Files) > 0 {
+				// Multiple files mode
+				torrentLength = tData.TorrentSize
+			} else {
+				// Single file mode
+				torrentLength = tData.FileLength
 			}
 
-			for i := 0; i < len(newBlock.block); i++ {
-				pieceCatalogue[pieceIndex][i+blockOffset] = blockData[i]
-				changesCatalogue[pieceIndex].SetBit(i + blockOffset)
+			if pieceIndex == len(tData.PieceHashes)-1 {
+				pieceLength = torrentLength % tData.PieceLength
+			} else {
+				pieceLength = tData.PieceLength
 			}
 
-			if changesCatalogue[pieceIndex].IsFull() {
-				var sha = sha1.New()
-				sha.Write(pieceCatalogue[pieceIndex])
-				pieceHash := sha.Sum(nil)[:20]
-
-				hashCorrect := bytes.Equal(pieceHash, tData.PieceHashes[pieceIndex].HashBytes)
-
-				if !hashCorrect {
-					// TODO: Better error handling
-					panic("Piece hash didn't match expected hash... Couldn't handle error.")
-				}
-
-				completePiece := piece{pieceIndex: pieceIndex, data: pieceCatalogue[pieceIndex]}
-				delete(pieceCatalogue, pieceIndex)
-				delete(changesCatalogue, pieceIndex)
-
-				pieceOutput <- completePiece
+			pieceData := make([]byte, pieceLength)
+			pieceCatalogue[pieceIndex] = pieceData
+			bitfield, err := customdatatypes.NewFixedSizeBitfield(pieceLength)
+			if err != nil {
+				// TODO: Better error handling here, although the error is technically impossible
+				panic(err)
 			}
+
+			changesCatalogue[pieceIndex] = bitfield
+		}
+
+		for i := 0; i < len(newBlock.block); i++ {
+			pieceCatalogue[pieceIndex][i+blockOffset] = blockData[i]
+			changesCatalogue[pieceIndex].SetBit(i + blockOffset)
+		}
+
+		if changesCatalogue[pieceIndex].IsFull() {
+			var sha = sha1.New()
+			sha.Write(pieceCatalogue[pieceIndex])
+			pieceHash := sha.Sum(nil)[:20]
+
+			hashCorrect := bytes.Equal(pieceHash, tData.PieceHashes[pieceIndex].HashBytes)
+
+			if !hashCorrect {
+				// TODO: Better error handling
+				panic("Piece hash didn't match expected hash... Couldn't handle error.")
+			}
+
+			completePiece := piece{pieceIndex: pieceIndex, data: pieceCatalogue[pieceIndex]}
+			delete(pieceCatalogue, pieceIndex)
+			delete(changesCatalogue, pieceIndex)
+
+			pieceOutput <- completePiece
 		}
 	}
 }
@@ -391,12 +386,15 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces *[]B
 }
 
 func (pcm *PeerConnectionManager) generateBlockRequests(tData *TorrentData, pieceIndex, pieceLength int) []BlockRequest {
-	// TODO: ALL OF THIS assumes one file per torrent.
 	begin := 0
 	isLastPiece := len(tData.PieceHashes)-1 == pieceIndex
 
 	if isLastPiece {
-		pieceLength = tData.FileLength % pieceLength
+		if len(tData.Files) > 0 {
+			pieceLength = tData.TorrentSize % pieceLength
+		} else {
+			pieceLength = tData.FileLength % pieceLength
+		}
 	}
 
 	blockCount := pieceLength / blockSize

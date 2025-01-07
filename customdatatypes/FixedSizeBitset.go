@@ -47,7 +47,6 @@ func (bf *FixedSizeBitfield) IsSet(bitIndex int) (bool, error) {
 }
 
 func (bf *FixedSizeBitfield) IsFull() bool {
-	// TODO: Busted, cause it checks the extra bits too
 	numBytes := (bf.bitCount + 7) / 8
 
 	for i := 0; i < numBytes-1; i++ {

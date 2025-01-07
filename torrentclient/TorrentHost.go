@@ -20,6 +20,7 @@ const (
 type torrentHost struct {
 	torrentData  TorrentData
 	torrentStats TorrentStats
+	diskManager  DiskManager
 
 	peerID                customdatatypes.CustomHash
 	trackConnection       trackerConnection
@@ -79,7 +80,7 @@ func (th *torrentHost) torrentManager() {
 
 	go th.trackerManager(trackerEventsChannel, peerListChannel)
 	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, newPieceAcquiredChan, bitfieldRequestChan, bitfieldOutputChan, torrentDownloadComplete)
-	go fileWriter(pieceToWriter, &th.torrentData)
+	go th.diskManager.fileWriter(pieceToWriter, &th.torrentData)
 	trackerEventsChannel <- T_STARTED
 
 	for {

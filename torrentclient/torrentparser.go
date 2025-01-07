@@ -3,17 +3,17 @@ package torrentclient
 import (
 	"bytes"
 	"crypto/sha1"
-	"strings"
+	"path/filepath"
 
 	"github.com/tomsaalex/BitTorrent_Client/bencoding"
 	"github.com/tomsaalex/BitTorrent_Client/customdatatypes"
 )
 
-type torrentParser struct {
+type TorrentParser struct {
 	c bencoding.Codec
 }
 
-func (tp *torrentParser) ParseTorrentFile(filePath string) (TorrentData, error) {
+func (tp *TorrentParser) ParseTorrentFile(filePath string) (TorrentData, error) {
 	bencodedValue, err := tp.c.DecodeFile(filePath)
 
 	if err != nil {
@@ -29,7 +29,7 @@ func calculateInfohash(bencodedInfoDict string) customdatatypes.CustomHash {
 	return customdatatypes.CustomHash{HashBytes: h.Sum(nil)}
 }
 
-func (tp *torrentParser) extractTorrentData(rawTorrentData bencoding.BencodableValue) (TorrentData, error) {
+func (tp *TorrentParser) extractTorrentData(rawTorrentData bencoding.BencodableValue) (TorrentData, error) {
 	var newTorrentData TorrentData
 
 	mainDictionaryValue, conversionSuccessful := rawTorrentData.(bencoding.BencodableMap)
@@ -135,12 +135,15 @@ func (tp *torrentParser) extractTorrentData(rawTorrentData bencoding.BencodableV
 		return newTorrentData, nil // We're in Single File Mode, nothing else that follows matters
 	}
 
+	// Multiple Files Mode fields
+
 	filesList, valuePresent := infoDictionary["files"].(bencoding.BencodableList)
 
 	if !valuePresent {
 		return TorrentData{}, &MalformedTorrentError{Message: "Files missing in Multiple File Mode"}
 	}
 
+	torrentSize := 0
 	for _, currentDictionary := range filesList {
 		regularDictionary, valuePresent := currentDictionary.(bencoding.BencodableMap)
 		if !valuePresent {
@@ -156,6 +159,7 @@ func (tp *torrentParser) extractTorrentData(rawTorrentData bencoding.BencodableV
 		}
 
 		currentFileData.FileLength = length
+		torrentSize += length
 
 		path, valuePresent := regularDictionary["path"].(bencoding.BencodableList)
 
@@ -163,25 +167,21 @@ func (tp *torrentParser) extractTorrentData(rawTorrentData bencoding.BencodableV
 			return TorrentData{}, &MalformedTorrentError{Message: "A dictionary in Files doesn't contain the file's path"}
 		}
 
-		var sb strings.Builder
-		sb.Reset()
-		for index, pathFragment := range path {
+		pathFrags := make([]string, 0)
+		for _, pathFragment := range path {
 			stringPathFragment, valuePresent := pathFragment.(bencoding.BencodableString)
 
 			if !valuePresent {
 				return TorrentData{}, &MalformedTorrentError{Message: "Path fragments in a File dictionary aren't strings"}
 			}
 
-			sb.WriteString(stringPathFragment)
-			if index != len(path)-1 {
-				sb.WriteByte('/')
-			}
+			pathFrags = append(pathFrags, stringPathFragment)
+
 		}
-
-		currentFileData.FilePath = sb.String()
-
+		currentFileData.FilePath = filepath.Join(pathFrags...)
 		newTorrentData.Files = append(newTorrentData.Files, currentFileData)
 	}
 
+	newTorrentData.TorrentSize = torrentSize
 	return newTorrentData, nil
 }
