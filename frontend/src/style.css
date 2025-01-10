@@ -1,5 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 html {
-    background-color: rgba(27, 38, 54, 1);
+    background-color: rgba(79, 52, 90, 1);
     text-align: center;
     color: white;
 }
