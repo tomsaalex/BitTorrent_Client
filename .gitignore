@@ -37,3 +37,12 @@ go.work.sum
 
 # Built Visual Studio Code Extensions
 *.vsix
+
+
+# Wails
+build/bin
+node_modules
+frontend/dist
+
+# Input files for testing
+torrent_files
