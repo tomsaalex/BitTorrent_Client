@@ -33,8 +33,13 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		OnStartup:        app.startup,
+		//BackgroundColour: &options.RGBA{R: 79, G: 52, B: 90, A: 1},
+		/*Windows: &windows.Options{
+			WebviewIsTransparent: false,
+			WindowIsTranslucent:  true,
+		},*/
+
+		OnStartup: app.startup,
 		Bind: []interface{}{
 			app,
 		},
