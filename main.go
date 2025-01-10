@@ -1,76 +1,46 @@
 package main
 
 import (
-	"log/slog"
-	"os"
-	"strconv"
-	"sync"
+	"embed"
 
-	"github.com/tomsaalex/BitTorrent_Client/bencoding"
-	"github.com/tomsaalex/BitTorrent_Client/bencoding/bparserrs"
-	"github.com/tomsaalex/BitTorrent_Client/torrentclient"
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
+//go:embed all:frontend/dist
+var assets embed.FS
+
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	/*logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
 	testTorrentClient := torrentclient.NewTorrentClient()
-	//testTorrentClient.AddTorrent("Atherton - Rivers of Fire.mp3.torrent")
-	//testTorrentClient.AddTorrent("dummy.torrent")
-	//testTorrentClient.AddTorrent("dummy_pic.png.torrent")
-	//testTorrentClient.AddTorrent("264661516_125653449911097_1362215899871345200_n.jpg.torrent")
-	//testTorrentClient.AddTorrent("deer_pic.jpeg.torrent")
 	testTorrentClient.AddTorrent("multi-file-torrent-test.torrent")
 
 	// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
 	var wg sync.WaitGroup
 	wg.Add(1)
-	wg.Wait()
+	wg.Wait()*/
+	// Create an instance of the app structure
+	app := NewApp()
 
-	/*var torrentParser torrentclient.TorrentParser
-	torrentData, err := torrentParser.ParseTorrentFile("multi-file-torrent-test.torrent")
+	// Create application with options
+	err := wails.Run(&options.App{
+		Title:  "BitTorrent_Client",
+		Width:  1024,
+		Height: 768,
+		AssetServer: &assetserver.Options{
+			Assets: assets,
+		},
+		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
+		OnStartup:        app.startup,
+		Bind: []interface{}{
+			app,
+		},
+	})
+
 	if err != nil {
-		panic(err)
+		println("Error:", err.Error())
 	}
-
-	testPiece := torrentclient.NewPiece(0, make([]byte, 32768))
-
-	var dManager torrentclient.DiskManager
-	pieceMappings := dManager.MapPieceToFiles(testPiece, &torrentData)
-	fmt.Print(pieceMappings)*/
-}
-
-func stringifyBencodedValue(bencodedValue bencoding.BencodableValue) (string, error) {
-	stringOutput := ""
-	switch castValue := bencodedValue.(type) {
-	case bencoding.BencodableInt:
-		stringOutput = strconv.Itoa(castValue)
-	case bencoding.BencodableString:
-		stringOutput = castValue
-	case bencoding.BencodableList:
-		stringOutput += "{"
-		for _, value := range castValue {
-			stringValue, err := stringifyBencodedValue(value)
-			if err != nil {
-				return "", err
-			}
-			stringOutput += stringValue + ","
-		}
-		stringOutput = stringOutput[:len(stringOutput)-2]
-		stringOutput += "}"
-	case bencoding.BencodableMap:
-		stringOutput += "["
-		for key, value := range castValue {
-			stringValue, err := stringifyBencodedValue(value)
-			if err != nil {
-				return "", err
-			}
-			stringOutput += key + ":" + stringValue + ""
-		}
-		stringOutput += "]"
-	default:
-		return "", &bparserrs.DecodingError{Message: "Argument isn't a known BencodedValue type"}
-	}
-	return stringOutput, nil
 }
