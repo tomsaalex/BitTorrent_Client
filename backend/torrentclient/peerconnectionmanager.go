@@ -44,7 +44,7 @@ func (pcm *PeerConnectionManager) establishConnection(peer peer, tData TorrentDa
 	return newConnection, nil
 }
 
-func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData TorrentData, peerID customdatatypes.CustomHash, connectionOutput chan connMessage, assemblerInput chan pieceMessage) {
+func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData TorrentData, peerID customdatatypes.CustomHash, connectionOutput chan connMessage, assemblerInput chan pieceMessage, dataReportsChan chan dataExchangeReport) {
 	for _, peer := range peersList {
 		peerConnection, err := pcm.establishConnection(peer, tData, connectionOutput, peerID, assemblerInput)
 
@@ -59,7 +59,7 @@ func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData T
 
 		pcm.peerConnections = append(pcm.peerConnections, peerConnection)
 
-		peerConnection.launchConnectionRoutines()
+		peerConnection.launchConnectionRoutines(dataReportsChan)
 	}
 }
 
@@ -103,7 +103,7 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 					unconnectedPeers = append(unconnectedPeers, peer)
 				}
 			}
-			pcm.establishConnections(unconnectedPeers, torrentData, peerID, connectionOutput, assemblerInput)
+			pcm.establishConnections(unconnectedPeers, torrentData, peerID, connectionOutput, assemblerInput, tStats.dataReportsChan)
 			if len(requestedPieces) == 0 {
 				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
@@ -136,8 +136,11 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			)
 
 			newPieceAcquiredChan <- receivedPiece
-			tStats.MarkPieceAsObtained(receivedPiece.pieceIndex)
-			if tStats.pieceIndex.IsFull() {
+
+			tStats.obtainedPiecesChan <- receivedPiece.pieceIndex
+			tStats.pieceIndexFullRequest <- true
+			pieceIndexFull := <-tStats.pieceIndexFullReply
+			if pieceIndexFull {
 				torrentDownloadComplete <- true
 			}
 			if len(requestedPieces) == 0 {
@@ -225,15 +228,36 @@ func (pcm *PeerConnectionManager) pieceAssembler(tData TorrentData, blockInput <
 	}
 }
 
-func (pcm *PeerConnectionManager) changeUnchokedDownloaders(optimisticUnchokedP peer, blockRequests []BlockRequest) {
-	for i := 0; i < len(pcm.peerConnections); i++ {
-		pcm.peerConnections[i].speedRequests <- true
-		pcm.peerConnections[i].dataTransferSpeedSnapshot = <-pcm.peerConnections[i].speedReplies
+func sortConnectionsBySpeed(connections []peerConnection, speeds []int) ([]peerConnection, []int) {
+	indices := make([]int, len(connections))
+
+	for i := 0; i < len(indices); i++ {
+		indices[i] = i
 	}
 
-	sort.Slice(pcm.peerConnections, func(i, j int) bool {
-		return pcm.peerConnections[i].dataTransferSpeedSnapshot < pcm.peerConnections[j].dataTransferSpeedSnapshot
+	sort.Slice(indices, func(i, j int) bool {
+		return speeds[indices[i]] < speeds[indices[j]]
 	})
+
+	sortedConnections := make([]peerConnection, len(connections))
+	sortedSpeeds := make([]int, len(connections))
+
+	for i := 0; i < len(indices); i++ {
+		sortedConnections[i] = connections[indices[i]]
+		sortedSpeeds[i] = speeds[indices[i]]
+	}
+
+	return sortedConnections, sortedSpeeds
+}
+
+func (pcm *PeerConnectionManager) changeUnchokedDownloaders(optimisticUnchokedP peer, blockRequests []BlockRequest) {
+	connSpeeds := make([]int, len(pcm.peerConnections))
+	for i := 0; i < len(pcm.peerConnections); i++ {
+		pcm.peerConnections[i].speedRequests <- true
+		connSpeeds[i] = <-pcm.peerConnections[i].speedReplies
+	}
+
+	pcm.peerConnections, connSpeeds = sortConnectionsBySpeed(pcm.peerConnections, connSpeeds)
 
 	downloaders := make([]peerConnection, 0)
 	for _, conn := range pcm.peerConnections {
@@ -250,11 +274,15 @@ func (pcm *PeerConnectionManager) changeUnchokedDownloaders(optimisticUnchokedP 
 
 	uninterestedPeers := make([]peerConnection, 0)
 
-	for _, conn := range pcm.peerConnections {
-		if len(downloaders) >= 1 && conn.dataTransferSpeedSnapshot > downloaders[len(downloaders)-1].dataTransferSpeedSnapshot {
-			uninterestedPeers = append(uninterestedPeers, conn)
-		} else if len(downloaders) == 0 {
-			// TODO: This if might be wrong. The protocol doesn't specify what to do if there are no downloaders, I don't think. Check later
+	lastDownloaderSpeed := 0
+	if len(downloaders) > 0 {
+		downloaders[len(downloaders)-1].speedRequests <- true
+		lastDownloaderSpeed = <-downloaders[len(downloaders)-1].speedReplies
+	}
+
+	for i, conn := range pcm.peerConnections {
+		// TODO: This adds every peer if there are no downloaders. The protocol isn't too specific on whether this is what we need.
+		if connSpeeds[i] >= lastDownloaderSpeed {
 			uninterestedPeers = append(uninterestedPeers, conn)
 		}
 	}
@@ -311,24 +339,29 @@ func (pcm *PeerConnectionManager) cancelRequestsToConnection(blockRequests []Blo
 	return validRequests
 }
 
-func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces *[]BlockRequest, tData *TorrentData, tStats *TorrentStats, numPieces, pieceLength int) {
+func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedBlocks *[]BlockRequest, tData *TorrentData, tStats *TorrentStats, numPieces, pieceLength int) {
 	for i := 0; i < numPieces; i++ {
 		scheduleSuccessful := false
 
-		if len(tStats.unselectedPieces) == 0 {
+		tStats.unselectedPiecesRequest <- true
+		unselectedPieces := <-tStats.unselectedPiecesReply
+
+		if len(unselectedPieces) == 0 {
 			return
 		}
 
 		for !scheduleSuccessful {
-			randomIndex := rand.IntN(len(tStats.unselectedPieces))
-			pieceIndex := tStats.unselectedPieces[randomIndex]
+			randomIndex := rand.IntN(len(unselectedPieces))
+			pieceIndex := unselectedPieces[randomIndex]
 
 			// TODO: THIS ENTIRE MARKED SECTION IS NOT PROPERLY DONE
 			// There are situations where you would want to re-request pieces, but that involves
 			// proper tracking of requested pieces and a timeout for when to request them.
 			// Redo soon
 			pieceInProgress := false
-			for _, p := range tStats.requestedPieces {
+			tStats.requestedPiecesRequest <- true
+			requestedPieces := <-tStats.requestedPiecesReply
+			for _, p := range requestedPieces {
 				if p == pieceIndex {
 					pieceInProgress = true
 					break
@@ -337,7 +370,7 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces *[]B
 			if pieceInProgress {
 				break
 			}
-			for _, rp := range *requestedPieces {
+			for _, rp := range *requestedBlocks {
 				if rp.pieceIndex == pieceIndex {
 					pieceInProgress = true
 					break
@@ -367,11 +400,11 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(requestedPieces *[]B
 					newRequests := pcm.generateBlockRequests(tData, pieceIndex, pieceLength)
 
 					for _, req := range newRequests {
-						*requestedPieces = append(*requestedPieces, req)
+						*requestedBlocks = append(*requestedBlocks, req)
 						conn.input <- requestMessage{index: req.pieceIndex, begin: req.blockStart, length: req.blockLength}
 					}
 
-					tStats.MarkPieceAsRequested(pieceIndex)
+					tStats.requestedPiecesChan <- pieceIndex
 
 					scheduleSuccessful = true
 					break

@@ -60,8 +60,12 @@ func (tc *TorrentClient) AddTorrent(torrentFilePath string) error {
 		return torrentStatsCreationError
 	}
 
-	newTorrentHost := NewTorrentHost(newTorrentData, torrentStats, tc.PeerID)
+	peerConnectionManager := newPeerConnectionManager()
+
+	newTorrentHost := NewTorrentHost(newTorrentData, torrentStats, tc.PeerID, *peerConnectionManager)
 	tc.torrents = append(tc.torrents, *newTorrentHost)
+
+	go newTorrentHost.torrentManager()
 
 	return nil
 }

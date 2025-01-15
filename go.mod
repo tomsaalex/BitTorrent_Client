@@ -1,8 +1,6 @@
 module github.com/tomsaalex/BitTorrent_Client
 
-go 1.21
-
-toolchain go1.23.2
+go 1.23.2
 
 // replace github.com/wailsapp/wails/v2 v2.9.2 => C:\Users\tomsa\go\pkg\mod
 

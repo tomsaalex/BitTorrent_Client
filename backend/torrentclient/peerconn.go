@@ -41,15 +41,25 @@ type connMessage struct {
 	peerMsg  peerMessage
 }
 
+type TrafficType bool
+
+const (
+	IncomingTraffic TrafficType = false
+	OutgoingTraffic             = true
+)
+
+type dataExchangeReport struct {
+	remotePeer         peer
+	exchangedDataCount int
+	trafType           TrafficType
+}
+
 type peerConnection struct {
 	otherPeer  peer
 	connection net.Conn
 	pieceCount int
 
 	remotePeerBitfield customdatatypes.FixedSizeBitfield
-
-	dataTransferSpeed         int
-	dataTransferSpeedSnapshot int // To have a stable value while sorting
 
 	input          chan peerMessage
 	output         chan connMessage
@@ -113,7 +123,7 @@ func calcConnectionSpeed(dataPoints []int) int {
 	return rollingAverage / len(dataPoints)
 }
 
-func (pc *peerConnection) launchConnectionRoutines() {
+func (pc *peerConnection) launchConnectionRoutines(dataReportChan chan dataExchangeReport) {
 	forwarderStateUpdater := make(chan StateUpdateType)
 	receiverStateUpdater := make(chan StateUpdateType)
 
@@ -122,7 +132,7 @@ func (pc *peerConnection) launchConnectionRoutines() {
 
 	peerBitfieldUpdater := make(chan []byte)
 
-	go pc.connDataManager(forwarderStateUpdater, receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater)
+	go pc.connDataManager(forwarderStateUpdater, receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater, dataReportChan)
 	go pc.forwarderController(forwarderStateUpdater)
 	go pc.receiverController(receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater)
 }
@@ -189,10 +199,11 @@ func (pc *peerConnection) receiverController(stateUpdater chan<- StateUpdateType
 	}
 }
 
-func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdateType, receiverStateUpdate <-chan StateUpdateType, peerIndexUpdate <-chan int, receiverDataRateUpdate <-chan int, peerBitfieldUpdate <-chan []byte) {
+func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdateType, receiverStateUpdate <-chan StateUpdateType, peerIndexUpdate <-chan int, receiverDataRateUpdate <-chan int, peerBitfieldUpdate <-chan []byte, dataReportChan chan dataExchangeReport) {
 	downloadDataCounter := 0
-	downloadRates := make([]int, 100)
+	dataTransferSpeed := 0
 
+	downloadRates := make([]int, 100)
 	dataRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
 
 	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
@@ -231,16 +242,17 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 			peerBitfield.SetBit(newHas)
 		case dataReport := <-receiverDataRateUpdate:
 			downloadDataCounter += dataReport
+			dataReportChan <- dataExchangeReport{remotePeer: pc.otherPeer, trafType: IncomingTraffic, exchangedDataCount: dataReport}
 		case <-pc.connDataRequests:
 			pc.connDataReplies <- cd
 		case index := <-pc.pieceCheck:
 			pieceCheckResult, _ := peerBitfield.IsSet(index)
 			pc.pieceStatus <- pieceCheckResult
 		case <-pc.speedRequests:
-			pc.speedReplies <- pc.dataTransferSpeed
+			pc.speedReplies <- dataTransferSpeed
 		case <-dataRateTicker.C:
 			downloadRates = addDataPoint(downloadRates, downloadDataCounter)
-			pc.dataTransferSpeed = calcConnectionSpeed(downloadRates)
+			dataTransferSpeed = calcConnectionSpeed(downloadRates)
 			downloadDataCounter = 0
 		case bitfield := <-peerBitfieldUpdate:
 			// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
@@ -252,88 +264,89 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 	}
 }
 
-func (pc *peerConnection) connectionRoutine() {
-	// TODO: Maybe make the channels one way, but to do that every channel operation must have its separate function,
-	// and you need to stick to the convention. Not sure if that's better
+/*
+	func (pc *peerConnection) connectionRoutine() {
+		// TODO: Maybe make the channels one way, but to do that every channel operation must have its separate function,
+		// and you need to stick to the convention. Not sure if that's better
 
-	receiverOutput := make(chan peerMessage)
-	toForwarder := make(chan peerMessage)
+		receiverOutput := make(chan peerMessage)
+		toForwarder := make(chan peerMessage)
 
-	dataCounter := 0
-	downloadRates := make([]int, 100)
+		dataCounter := 0
+		downloadRates := make([]int, 100)
 
-	dataRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
+		dataRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
 
-	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
-	peerBitfield, err := pc.createRemotePeerBitfield()
+		cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
+		peerBitfield, err := pc.createRemotePeerBitfield()
 
-	if err != nil {
-		// TODO: Handle this more elegantly somehow. It's technically an impossible error, but we still don't want to crash.
-		panic(err)
-	}
+		if err != nil {
+			// TODO: Handle this more elegantly somehow. It's technically an impossible error, but we still don't want to crash.
+			panic(err)
+		}
 
-	go pc.forwarderRoutine(toForwarder)
-	go pc.receiverRoutine(receiverOutput)
+		go pc.forwarderRoutine(toForwarder)
+		go pc.receiverRoutine(receiverOutput)
 
-	for {
-		select {
-		case rawMessage := <-receiverOutput:
-			/* TODO: Perhaps I shouldn't be accepting any traffic, but some traffic needs to go through still
-			 if cd.amChoking {
-				continue
-			} */
-			switch peerMessage := rawMessage.(type) {
-			case chokeMessage:
-				cd.peerChoking = true
-			case unchokeMessage:
-				cd.peerChoking = false
-			case interestedMessage:
-				cd.peerInterested = true
-			case notInterestedMessage:
-				cd.peerInterested = false
-			case haveMessage:
-				peerBitfield.SetBit(peerMessage.pieceIndex)
-			case pieceMessage:
-				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-				dataCounter += len(peerMessage.block)
-			case requestMessage:
-				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-			case cancelMessage:
-				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-			case bitfieldMessage:
-				// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
-				err := peerBitfield.ImportBitfield(peerMessage.bitfield)
-				if err != nil {
-					// TODO: DROP CONNECTION
+		for {
+			select {
+			case rawMessage := <-receiverOutput:
+				 TODO: Perhaps I shouldn't be accepting any traffic, but some traffic needs to go through still
+				 //if cd.amChoking {
+				//	continue
+				//}
+				switch peerMessage := rawMessage.(type) {
+				case chokeMessage:
+					cd.peerChoking = true
+				case unchokeMessage:
+					cd.peerChoking = false
+				case interestedMessage:
+					cd.peerInterested = true
+				case notInterestedMessage:
+					cd.peerInterested = false
+				case haveMessage:
+					peerBitfield.SetBit(peerMessage.pieceIndex)
+				case pieceMessage:
+					pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
+					dataCounter += len(peerMessage.block)
+				case requestMessage:
+					pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
+				case cancelMessage:
+					pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
+				case bitfieldMessage:
+					// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
+					err := peerBitfield.ImportBitfield(peerMessage.bitfield)
+					if err != nil {
+						// TODO: DROP CONNECTION
+					}
 				}
+			case rawMessage := <-pc.input:
+				toForwarder <- rawMessage
+				switch rawMessage.(type) {
+				case chokeMessage:
+					cd.amChoking = true
+				case unchokeMessage:
+					cd.amChoking = false
+				case interestedMessage:
+					cd.amInterested = true
+				case notInterestedMessage:
+					cd.amInterested = false
+				}
+			case <-pc.connDataRequests:
+				pc.connDataReplies <- cd
+			case index := <-pc.pieceCheck:
+				pieceCheckResult, _ := peerBitfield.IsSet(index)
+				pc.pieceStatus <- pieceCheckResult
+			case <-pc.speedRequests:
+				pc.speedReplies <- pc.dataTransferSpeed
+			case <-dataRateTicker.C:
+				downloadRates = addDataPoint(downloadRates, dataCounter)
+				pc.dataTransferSpeed = calcConnectionSpeed(downloadRates)
+				dataCounter = 0
 			}
-		case rawMessage := <-pc.input:
-			toForwarder <- rawMessage
-			switch rawMessage.(type) {
-			case chokeMessage:
-				cd.amChoking = true
-			case unchokeMessage:
-				cd.amChoking = false
-			case interestedMessage:
-				cd.amInterested = true
-			case notInterestedMessage:
-				cd.amInterested = false
-			}
-		case <-pc.connDataRequests:
-			pc.connDataReplies <- cd
-		case index := <-pc.pieceCheck:
-			pieceCheckResult, _ := peerBitfield.IsSet(index)
-			pc.pieceStatus <- pieceCheckResult
-		case <-pc.speedRequests:
-			pc.speedReplies <- pc.dataTransferSpeed
-		case <-dataRateTicker.C:
-			downloadRates = addDataPoint(downloadRates, dataCounter)
-			pc.dataTransferSpeed = calcConnectionSpeed(downloadRates)
-			dataCounter = 0
 		}
 	}
-}
-
+*/
 func (pc *peerConnection) forwarderRoutine(msgInput <-chan peerMessage) {
 	keepAliveTicker := time.NewTicker(KEEP_ALIVE_TIME)
 

@@ -79,6 +79,7 @@ func (th *torrentHost) torrentManager() {
 	torrentDownloadComplete := make(chan bool)
 
 	go th.trackerManager(trackerEventsChannel, peerListChannel)
+	go th.torrentStats.StatsKeeper()
 	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, newPieceAcquiredChan, bitfieldRequestChan, bitfieldOutputChan, torrentDownloadComplete)
 	go th.diskManager.fileWriter(pieceToWriter, &th.torrentData)
 	trackerEventsChannel <- T_STARTED
@@ -134,10 +135,7 @@ func (th *torrentHost) torrentManager() {
 	}
 }
 
-func NewTorrentHost(torrentData TorrentData, torrentStats TorrentStats, peerID customdatatypes.CustomHash) *torrentHost {
-	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID}
-
-	go newTorrent.torrentManager()
-
+func NewTorrentHost(torrentData TorrentData, torrentStats TorrentStats, peerID customdatatypes.CustomHash, pcm PeerConnectionManager) *torrentHost {
+	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID, peerConnectionManager: pcm}
 	return newTorrent
 }

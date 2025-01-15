@@ -34,7 +34,7 @@ func (tc *trackerConnection) parseTrackerResponse(response string) (trackerRespo
 	bencodedResponse, err := tc.c.DecodeString(response)
 
 	if err != nil {
-		return trackerResponse{}, &TrackerConnectionError{Message: "Couldn't parse tracker response: " + fmt.Sprintf("%s", err.Error())}
+		return trackerResponse{}, &TrackerConnectionError{Message: "Couldn't parse tracker response: " + err.Error()}
 	}
 
 	// Check that Bdecoded response is a dictionary, as demanded by protocol
@@ -131,7 +131,7 @@ func (tc *trackerConnection) parseTrackerResponse(response string) (trackerRespo
 	return processedResponse, nil
 }
 
-func (tc *trackerConnection) announceRequest(td TorrentData, ts TorrentStats, peerID customdatatypes.CustomHash, te TrackerEvent) (trackerResponse, error) {
+func (tc *trackerConnection) announceRequest(td TorrentData, tStats TorrentStats, peerID customdatatypes.CustomHash, te TrackerEvent) (trackerResponse, error) {
 	requestURL := fmt.Sprintf("%s?", td.Announce)
 
 	requestParameters := url.Values{}
@@ -149,10 +149,10 @@ func (tc *trackerConnection) announceRequest(td TorrentData, ts TorrentStats, pe
 	requestParameters.Add("info_hash", string(td.Infohash.HashBytes))
 	requestParameters.Add("peer_id", string(peerID.HashBytes))
 	//requestParameters.Add("ip", "tomsa.go.ro")                                  // Replace this with something proper
-	requestParameters.Add("port", "6881")                                       // Replace this with the proper port
-	requestParameters.Add("uploaded", strconv.Itoa(ts.uploadedBytes))           //
-	requestParameters.Add("downloaded", strconv.Itoa(ts.downloadedBytes))       //
-	requestParameters.Add("left", strconv.Itoa(torrentSize-ts.downloadedBytes)) //
+	requestParameters.Add("port", "6881")                                           // Replace this with the proper port
+	requestParameters.Add("uploaded", strconv.Itoa(tStats.uploadedBytes))           //
+	requestParameters.Add("downloaded", strconv.Itoa(tStats.downloadedBytes))       //
+	requestParameters.Add("left", strconv.Itoa(torrentSize-tStats.downloadedBytes)) //
 	requestParameters.Add("compact", "1")
 
 	if te != T_NIL {

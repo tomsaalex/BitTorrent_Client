@@ -16,12 +16,14 @@ func main() {
 	slog.SetDefault(logger)
 
 	testTorrentClient := torrentclient.NewTorrentClient()
-	testTorrentClient.AddTorrent("multi-file-torrent-test.torrent")
+
+	testTorrentClient.AddTorrent("torrent_files/multi-file-torrent-test.torrent")
 
 	// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	wg.Wait()*/
+
 	// Create an instance of the app structure
 	app := NewApp()
 
@@ -34,10 +36,10 @@ func main() {
 			Assets: assets,
 		},
 		//BackgroundColour: &options.RGBA{R: 79, G: 52, B: 90, A: 1},
-		/*Windows: &windows.Options{
-			WebviewIsTransparent: false,
-			WindowIsTranslucent:  true,
-		},*/
+		//Windows: &windows.Options{
+		//	WebviewIsTransparent: false,
+		//	WindowIsTranslucent:  true,
+		//},
 
 		OnStartup: app.startup,
 		Bind: []interface{}{
@@ -48,4 +50,41 @@ func main() {
 	if err != nil {
 		println("Error:", err.Error())
 	}
+
 }
+
+/*
+func stringifyBencodedValue(bencodedValue bencoding.BencodableValue) (string, error) {
+	stringOutput := ""
+	switch castValue := bencodedValue.(type) {
+	case bencoding.BencodableInt:
+		stringOutput = strconv.Itoa(castValue)
+	case bencoding.BencodableString:
+		stringOutput = castValue
+	case bencoding.BencodableList:
+		stringOutput += "{"
+		for _, value := range castValue {
+			stringValue, err := stringifyBencodedValue(value)
+			if err != nil {
+				return "", err
+			}
+			stringOutput += stringValue + ","
+		}
+		stringOutput = stringOutput[:len(stringOutput)-2]
+		stringOutput += "}"
+	case bencoding.BencodableMap:
+		stringOutput += "["
+		for key, value := range castValue {
+			stringValue, err := stringifyBencodedValue(value)
+			if err != nil {
+				return "", err
+			}
+			stringOutput += key + ":" + stringValue + ""
+		}
+		stringOutput += "]"
+	default:
+		return "", &bparserrs.DecodingError{Message: "Argument isn't a known BencodedValue type"}
+	}
+	return stringOutput, nil
+}
+*/
