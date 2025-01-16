@@ -22,7 +22,8 @@ func main() {
 	// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
 	var wg sync.WaitGroup
 	wg.Add(1)
-	wg.Wait()*/
+	wg.Wait()
+	*/
 
 	// Create an instance of the app structure
 	app := NewApp()

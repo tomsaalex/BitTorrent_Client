@@ -63,8 +63,6 @@ func (th *torrentHost) torrentManager() {
 		slog.String("method", "torrentManager"),
 	)
 
-	piecesStoredToDisk, _ := customdatatypes.NewFixedSizeBitfield(len(th.torrentData.PieceHashes))
-
 	centralPeerList := make([]peer, 0)
 
 	trackerEventsChannel := make(chan TrackerEvent)
@@ -125,9 +123,12 @@ func (th *torrentHost) torrentManager() {
 				slog.String("method", "torrentManager"),
 			)
 
-			piecesStoredToDisk.SetBit(pieceIndex)
+			th.torrentStats.storedPiecesAnnouncer <- pieceIndex
 
-			if piecesStoredToDisk.IsFull() {
+			th.torrentStats.haveAllPiecesRequest <- true
+			haveAllPieces := <-th.torrentStats.haveAllPiecesReply
+			if haveAllPieces {
+				trackerEventsChannel <- T_COMPLETED
 				slog.LogAttrs(
 					context.Background(),
 					slog.LevelInfo,
@@ -140,7 +141,6 @@ func (th *torrentHost) torrentManager() {
 }
 
 func NewTorrentHost(torrentData TorrentData, torrentStats TorrentStats, peerID customdatatypes.CustomHash, pcm PeerConnectionManager) *torrentHost {
-
 	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID, peerConnectionManager: pcm}
 	return newTorrent
 }

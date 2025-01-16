@@ -20,8 +20,9 @@ type TorrentStats struct {
 
 	connectionDataStatuses map[string]connectionDataStatus
 
-	requestedPieces  []int
-	unselectedPieces []int
+	piecesStoredToDisk customdatatypes.FixedSizeBitfield
+	requestedPieces    []int
+	unselectedPieces   []int
 
 	obtainedPiecesChan    chan int
 	requestedPiecesChan   chan int
@@ -33,6 +34,11 @@ type TorrentStats struct {
 
 	requestedPiecesRequest chan bool
 	requestedPiecesReply   chan []int
+
+	storedPiecesAnnouncer chan int
+
+	haveAllPiecesRequest chan bool
+	haveAllPiecesReply   chan bool
 
 	dataReportsChan chan dataExchangeReport
 }
@@ -71,6 +77,10 @@ func (ts *TorrentStats) StatsKeeper() {
 
 			ts.connectionDataStatuses[dr.remotePeer.fullAddress()] = connectionStats
 			fmt.Println(ts.downloadedBytes)
+		case <-ts.haveAllPiecesRequest:
+			ts.haveAllPiecesReply <- ts.piecesStoredToDisk.IsFull()
+		case pieceIndex := <-ts.storedPiecesAnnouncer:
+			ts.piecesStoredToDisk.SetBit(pieceIndex)
 		}
 	}
 }
@@ -101,6 +111,13 @@ func (ts *TorrentStats) markPieceAsRequested(pIndex int) {
 func NewTorrentStats(pieceCount int) (TorrentStats, error) {
 	bitfield, err := customdatatypes.NewFixedSizeBitfield(pieceCount)
 	unselectedPieces := bitfield.GetUnsetBitsIndices()
+	requestedPieces := make([]int, 0)
+
+	if err != nil {
+		return TorrentStats{}, err
+	}
+
+	piecesStoredToDisk, err := customdatatypes.NewFixedSizeBitfield(pieceCount)
 
 	if err != nil {
 		return TorrentStats{}, err
@@ -122,5 +139,10 @@ func NewTorrentStats(pieceCount int) (TorrentStats, error) {
 
 	dataReportsChan := make(chan dataExchangeReport)
 
-	return TorrentStats{uploadedBytes: 0, downloadedBytes: 0, pieceIndex: *bitfield, unselectedPieces: unselectedPieces, obtainedPiecesChan: obtainedPiecesChan, requestedPiecesChan: requestedPiecesChan, pieceIndexFullRequest: pieceIndexFullRequest, pieceIndexFullReply: pieceIndexFullReply, unselectedPiecesRequest: unselectedPiecesRequest, unselectedPiecesReply: unselectedPiecesReply, requestedPiecesRequest: requestedPiecesRequest, requestedPiecesReply: requestedPiecesReply, dataReportsChan: dataReportsChan, connectionDataStatuses: connectionDataStatuses}, nil
+	storedPiecesAnnouncer := make(chan int)
+
+	haveAllPiecesRequest := make(chan bool)
+	haveAllPiecesReply := make(chan bool)
+
+	return TorrentStats{uploadedBytes: 0, downloadedBytes: 0, pieceIndex: *bitfield, unselectedPieces: unselectedPieces, requestedPieces: requestedPieces, obtainedPiecesChan: obtainedPiecesChan, requestedPiecesChan: requestedPiecesChan, pieceIndexFullRequest: pieceIndexFullRequest, pieceIndexFullReply: pieceIndexFullReply, unselectedPiecesRequest: unselectedPiecesRequest, unselectedPiecesReply: unselectedPiecesReply, requestedPiecesRequest: requestedPiecesRequest, requestedPiecesReply: requestedPiecesReply, dataReportsChan: dataReportsChan, connectionDataStatuses: connectionDataStatuses, piecesStoredToDisk: *piecesStoredToDisk, storedPiecesAnnouncer: storedPiecesAnnouncer, haveAllPiecesRequest: haveAllPiecesRequest, haveAllPiecesReply: haveAllPiecesReply}, nil
 }
