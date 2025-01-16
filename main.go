@@ -12,17 +12,18 @@ import (
 var assets embed.FS
 
 func main() {
-	/*logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
+	/*
+		logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+		slog.SetDefault(logger)
 
-	testTorrentClient := torrentclient.NewTorrentClient()
+		testTorrentClient := torrentclient.NewTorrentClient()
 
-	testTorrentClient.AddTorrent("torrent_files/multi-file-torrent-test.torrent")
+		testTorrentClient.AddTorrent("torrent_files/Atherton - Rivers of Fire.mp3.torrent")
 
-	// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	wg.Wait()
+		// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
+		var wg sync.WaitGroup
+		wg.Add(1)
+		wg.Wait()
 	*/
 
 	// Create an instance of the app structure

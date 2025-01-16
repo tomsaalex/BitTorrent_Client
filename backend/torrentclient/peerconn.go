@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -464,14 +465,14 @@ func (pc *peerConnection) receiverRoutine(msgOutput chan<- peerMessage) {
 		peerMessage, err := pc.receiveMessage(buffcon)
 		if err != nil {
 			// TODO: Handle this more nicely, though idk how, cause this is in a goroutine
-			//panic(err)
-			slog.LogAttrs(
+			panic(err)
+			/*slog.LogAttrs(
 				context.Background(),
 				slog.LevelError,
 				"Error receiving message from remote peer. Connection dropped.",
 				slog.String("peerIP", pc.otherPeer.ip),
 				slog.Int("PeerPort", int(pc.otherPeer.port)),
-			)
+			)*/
 		}
 		msgOutput <- peerMessage
 	}
@@ -779,7 +780,7 @@ func (pc *peerConnection) sendNotInterested() error {
 }
 
 func (pc *peerConnection) sendHave(pieceIndex int) error {
-	// Message length is 1
+	// Message length is 5
 	msgLength := make([]byte, 4)
 	binary.BigEndian.PutUint32(msgLength, uint32(5))
 
@@ -797,10 +798,11 @@ func (pc *peerConnection) sendHave(pieceIndex int) error {
 
 	encodedHaveMsg := haveBuffer.Bytes()
 
-	_, writeErr := pc.connection.Write(encodedHaveMsg)
+	numWritten, writeErr := pc.connection.Write(encodedHaveMsg)
 	if writeErr != nil {
 		return &PeerCommunicationError{Message: "Couldn't send have", InvolvedPeer: pc.otherPeer}
 	}
+	fmt.Println(numWritten)
 
 	return nil
 }

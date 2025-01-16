@@ -77,11 +77,11 @@ func (th *torrentHost) torrentManager() {
 	pieceToWriter := make(chan piece)
 	newStoredPieceChan := make(chan int)
 
-	torrentDownloadComplete := make(chan bool)
+	havePieceAnnouncer := make(chan int)
 
 	go th.trackerManager(trackerEventsChannel, peerListChannel)
 	go th.torrentStats.StatsKeeper()
-	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, bitfieldRequestChan, bitfieldOutputChan, torrentDownloadComplete)
+	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, havePieceAnnouncer)
 	go th.diskManager.fileWriter(pieceToWriter, newStoredPieceChan, &th.torrentData)
 	trackerEventsChannel <- T_STARTED
 
@@ -124,6 +124,7 @@ func (th *torrentHost) torrentManager() {
 			)
 
 			th.torrentStats.storedPiecesAnnouncer <- pieceIndex
+			havePieceAnnouncer <- pieceIndex
 
 			th.torrentStats.haveAllPiecesRequest <- true
 			haveAllPieces := <-th.torrentStats.haveAllPiecesReply

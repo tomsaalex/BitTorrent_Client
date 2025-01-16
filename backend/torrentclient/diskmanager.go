@@ -171,16 +171,16 @@ func (dm *DiskManager) fileWriter(pieceInput <-chan piece, pieceStoredAnnounce c
 				// TODO: Handle this error better
 				panic(err)
 			}
-
-			slog.LogAttrs(
-				context.Background(),
-				slog.LevelInfo,
-				"Wrote piece to disk",
-				slog.Int("PieceIndex", pm.p.pieceIndex),
-				slog.String("method", "diskManager"),
-			)
-
-			pieceStoredAnnounce <- piece.pieceIndex
 		}
+
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Wrote piece to disk",
+			slog.Int("PieceIndex", piece.pieceIndex),
+			slog.String("method", "diskManager"),
+		)
+
+		pieceStoredAnnounce <- piece.pieceIndex
 	}
 }

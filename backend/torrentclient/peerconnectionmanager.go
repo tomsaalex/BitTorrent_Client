@@ -12,7 +12,7 @@ import (
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
 )
 
-const piecesDownloadNum int = 20
+const piecesDownloadNum int = 1
 const downloadersNum int = 4
 const unchokingInterval time.Duration = 10 * time.Second
 const optimisticUnchokingInterval time.Duration = 30 * time.Second
@@ -63,7 +63,7 @@ func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData T
 	}
 }
 
-func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, pieceToWriter chan<- piece, bitfieldRequestChan chan<- bool, bitfieldOutputChan <-chan customdatatypes.FixedSizeBitfield, torrentDownloadComplete chan<- bool) {
+func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, pieceToWriter chan<- piece, havePieceAnnouncer <-chan int) {
 	peerRequestChan <- true
 
 	connectionOutput := make(chan connMessage)
@@ -142,6 +142,18 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			if len(requestedPieces) == 0 {
 				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
+		case pieceIndex := <-havePieceAnnouncer:
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelInfo,
+				"Broadcasting 'have'",
+				slog.Int("pieceIndex", pieceIndex),
+			)
+			for _, pc := range pcm.peerConnections {
+				newMsg := haveMessage{pieceIndex: pieceIndex}
+				pc.input <- newMsg
+			}
+
 		case <-regularUnchokeTicker.C:
 			slog.LogAttrs(
 				context.Background(),
