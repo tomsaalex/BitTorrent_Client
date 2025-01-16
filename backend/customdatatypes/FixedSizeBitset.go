@@ -9,6 +9,7 @@ import (
 type FixedSizeBitfield struct {
 	internalField []byte
 	bitCount      int
+	bitsSet       int
 }
 
 func (bf *FixedSizeBitfield) SetBit(bitIndex int) error {
@@ -18,7 +19,12 @@ func (bf *FixedSizeBitfield) SetBit(bitIndex int) error {
 	byteNum := bitIndex / 8
 	bitToUpdate := bitIndex % 8
 
+	oldByte := bf.internalField[byteNum]
 	bf.internalField[byteNum] |= (1 << (7 - bitToUpdate))
+
+	if oldByte != bf.internalField[byteNum] {
+		bf.bitsSet++
+	}
 
 	return nil
 }
@@ -30,7 +36,12 @@ func (bf *FixedSizeBitfield) ClearBit(bitIndex int) error {
 	byteNum := bitIndex / 8
 	bitToUpdate := bitIndex % 8
 
+	oldByte := bf.internalField[byteNum]
 	bf.internalField[byteNum] &^= (1 << (7 - bitToUpdate))
+
+	if oldByte != bf.internalField[byteNum] {
+		bf.bitsSet--
+	}
 
 	return nil
 }
@@ -47,24 +58,27 @@ func (bf *FixedSizeBitfield) IsSet(bitIndex int) (bool, error) {
 }
 
 func (bf *FixedSizeBitfield) IsFull() bool {
-	numBytes := (bf.bitCount + 7) / 8
+	return bf.bitsSet == bf.bitCount
+	/*
+		////// KEEPING THIS HERE IN CASE THE NEW SOLUTION IS BROKEN IN SOME WAY //////
+		numBytes := (bf.bitCount + 7) / 8
 
-	for i := 0; i < numBytes-1; i++ {
-		if bf.internalField[i] != 0xFF {
-			return false
+		for i := 0; i < numBytes-1; i++ {
+			if bf.internalField[i] != 0xFF {
+				return false
+			}
 		}
-	}
 
-	lastByte := bf.internalField[numBytes-1]
-	extraBitCount := (numBytes * 8) - bf.bitCount
+		lastByte := bf.internalField[numBytes-1]
+		extraBitCount := (numBytes * 8) - bf.bitCount
 
-	for i := 0; i < (8 - extraBitCount); i++ {
-		if (lastByte>>(7-i))&1 == 0 {
-			return false
+		for i := 0; i < (8 - extraBitCount); i++ {
+			if (lastByte>>(7-i))&1 == 0 {
+				return false
+			}
 		}
-	}
 
-	return true
+		return true*/
 }
 
 func (bf *FixedSizeBitfield) ExposeBitfield() []byte {
@@ -115,5 +129,5 @@ func NewFixedSizeBitfield(bitCount int) (*FixedSizeBitfield, error) {
 	}
 
 	numBytes := (bitCount + 7) / 8
-	return &FixedSizeBitfield{internalField: make([]byte, numBytes), bitCount: bitCount}, nil
+	return &FixedSizeBitfield{internalField: make([]byte, numBytes), bitCount: bitCount, bitsSet: 0}, nil
 }

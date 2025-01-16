@@ -63,7 +63,7 @@ func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData T
 	}
 }
 
-func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, newPieceAcquiredChan chan<- piece, bitfieldRequestChan chan<- bool, bitfieldOutputChan <-chan customdatatypes.FixedSizeBitfield, torrentDownloadComplete chan<- bool) {
+func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, pieceToWriter chan<- piece, bitfieldRequestChan chan<- bool, bitfieldOutputChan <-chan customdatatypes.FixedSizeBitfield, torrentDownloadComplete chan<- bool) {
 	peerRequestChan <- true
 
 	connectionOutput := make(chan connMessage)
@@ -135,14 +135,10 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 				slog.Int("pieceIndex", receivedPiece.pieceIndex),
 			)
 
-			newPieceAcquiredChan <- receivedPiece
+			pieceToWriter <- receivedPiece
 
 			tStats.obtainedPiecesChan <- receivedPiece.pieceIndex
-			tStats.pieceIndexFullRequest <- true
-			pieceIndexFull := <-tStats.pieceIndexFullReply
-			if pieceIndexFull {
-				torrentDownloadComplete <- true
-			}
+
 			if len(requestedPieces) == 0 {
 				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}

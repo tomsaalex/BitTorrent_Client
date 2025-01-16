@@ -62,6 +62,9 @@ func (th *torrentHost) torrentManager() {
 		"Started",
 		slog.String("method", "torrentManager"),
 	)
+
+	piecesStoredToDisk, _ := customdatatypes.NewFixedSizeBitfield(len(th.torrentData.PieceHashes))
+
 	centralPeerList := make([]peer, 0)
 
 	trackerEventsChannel := make(chan TrackerEvent)
@@ -70,18 +73,18 @@ func (th *torrentHost) torrentManager() {
 	peersToConnectChan := make(chan []peer)
 	peerRequestChan := make(chan bool)
 
-	newPieceAcquiredChan := make(chan piece)
 	bitfieldOutputChan := make(chan customdatatypes.FixedSizeBitfield)
 	bitfieldRequestChan := make(chan bool)
 
 	pieceToWriter := make(chan piece)
+	newStoredPieceChan := make(chan int)
 
 	torrentDownloadComplete := make(chan bool)
 
 	go th.trackerManager(trackerEventsChannel, peerListChannel)
 	go th.torrentStats.StatsKeeper()
-	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, newPieceAcquiredChan, bitfieldRequestChan, bitfieldOutputChan, torrentDownloadComplete)
-	go th.diskManager.fileWriter(pieceToWriter, &th.torrentData)
+	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, bitfieldRequestChan, bitfieldOutputChan, torrentDownloadComplete)
+	go th.diskManager.fileWriter(pieceToWriter, newStoredPieceChan, &th.torrentData)
 	trackerEventsChannel <- T_STARTED
 
 	for {
@@ -113,29 +116,31 @@ func (th *torrentHost) torrentManager() {
 				"Sent bitfield to connection manager",
 				slog.String("method", "torrentManager"),
 			)
-		case newPiece := <-newPieceAcquiredChan:
+		case pieceIndex := <-newStoredPieceChan:
 			slog.LogAttrs(
 				context.Background(),
 				slog.LevelInfo,
 				"Received piece",
-				slog.Int("Piece number", newPiece.pieceIndex),
+				slog.Int("Piece number", pieceIndex),
 				slog.String("method", "torrentManager"),
 			)
 
-			pieceToWriter <- newPiece
-		case <-torrentDownloadComplete:
-			// TODO: This doesn't take into account storing the files on the disk. It just tells you that all the pieces are downloaded and were sent to the torrent host.
-			slog.LogAttrs(
-				context.Background(),
-				slog.LevelInfo,
-				"FILE DOWNLOAD COMPLETE",
-				slog.String("method", "torrentManager"),
-			)
+			piecesStoredToDisk.SetBit(pieceIndex)
+
+			if piecesStoredToDisk.IsFull() {
+				slog.LogAttrs(
+					context.Background(),
+					slog.LevelInfo,
+					"FILE DOWNLOAD COMPLETE",
+					slog.String("method", "torrentManager"),
+				)
+			}
 		}
 	}
 }
 
 func NewTorrentHost(torrentData TorrentData, torrentStats TorrentStats, peerID customdatatypes.CustomHash, pcm PeerConnectionManager) *torrentHost {
+
 	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID, peerConnectionManager: pcm}
 	return newTorrent
 }

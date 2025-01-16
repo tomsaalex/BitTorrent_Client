@@ -142,8 +142,7 @@ func (dm *DiskManager) MapPieceToFiles(p piece, tData *TorrentData) []PieceFileM
 	return pieceFileMappings
 }
 
-// TODO: This entire file is written with the assumption of a torrent with only one file. For now.
-func (dm *DiskManager) fileWriter(pieceInput <-chan piece, tData *TorrentData) {
+func (dm *DiskManager) fileWriter(pieceInput <-chan piece, pieceStoredAnnounce chan<- int, tData *TorrentData) {
 	fileIndex := make(map[string]bool)
 	var directoryName string
 	if len(tData.Files) > 0 {
@@ -172,6 +171,8 @@ func (dm *DiskManager) fileWriter(pieceInput <-chan piece, tData *TorrentData) {
 				// TODO: Handle this error better
 				panic(err)
 			}
+
+			pieceStoredAnnounce <- piece.pieceIndex
 
 			slog.LogAttrs(
 				context.Background(),
