@@ -12,6 +12,10 @@ type FixedSizeBitfield struct {
 	bitsSet       int
 }
 
+func (bf *FixedSizeBitfield) BitCount() int {
+	return bf.bitCount
+}
+
 func (bf *FixedSizeBitfield) SetBit(bitIndex int) error {
 	if bitIndex >= bf.bitCount || bitIndex < 0 {
 		return &generalerrors.IllegalAccessError{Message: fmt.Sprintf("Can't access given bit. Bit number %d is out of the bounds of the Bitfield with length %d", bitIndex, bf.bitCount)}
@@ -82,7 +86,8 @@ func (bf *FixedSizeBitfield) IsFull() bool {
 }
 
 func (bf *FixedSizeBitfield) ExposeBitfield() []byte {
-	return bf.internalField
+	// Makes a copy, so you can't accidentally affect the bitfield without safe-guards.
+	return append([]byte{}, bf.internalField...)
 }
 
 func (bf *FixedSizeBitfield) ImportBitfield(data []byte) error {

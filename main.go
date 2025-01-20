@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"embed"
+	"log/slog"
+	"os"
 
+	"github.com/tomsaalex/BitTorrent_Client/backend/torrentclient"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -12,22 +16,26 @@ import (
 var assets embed.FS
 
 func main() {
-	/*
-		logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-		slog.SetDefault(logger)
 
-		testTorrentClient := torrentclient.NewTorrentClient()
+	/*logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 
-		testTorrentClient.AddTorrent("torrent_files/Atherton - Rivers of Fire.mp3.torrent")
+	testTorrentClient := torrentclient.NewTorrentClient()
 
-		// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
-		var wg sync.WaitGroup
-		wg.Add(1)
-		wg.Wait()
-	*/
+	go testTorrentClient.ClientRoutine()
+	testTorrentClient.AddTorrent("torrent_files/Atherton - Rivers of Fire.mp3.torrent")
+
+	// Absolutely not how this should work, but it'll do until the proper implementation of the program closing logic is written.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	wg.Wait()*/
 
 	// Create an instance of the app structure
 	app := NewApp()
+
+	client := torrentclient.NewTorrentClient()
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 
 	// Create application with options
 	err := wails.Run(&options.App{
@@ -43,9 +51,20 @@ func main() {
 		//	WindowIsTranslucent:  true,
 		//},
 
-		OnStartup: app.startup,
+		OnStartup: func(ctx context.Context) {
+			app.ctx = ctx
+			client.AppContext = ctx
+
+			go client.ClientRoutine()
+			client.AddTorrent("torrent_files/Atherton - Rivers of Fire.mp3.torrent")
+			/*
+				hwnd := win.FindWindow(nil, syscall.StringToUTF16Ptr("BitTorrent_Client"))
+				win.SetWindowLong(hwnd, win.GWL_EXSTYLE, win.GetWindowLong(hwnd, win.GWL_EXSTYLE)|win.WS_EX_LAYERED)*/
+
+		},
 		Bind: []interface{}{
 			app,
+			client,
 		},
 	})
 

@@ -55,12 +55,21 @@ type dataExchangeReport struct {
 	trafType           TrafficType
 }
 
+type speedExchangeReport struct {
+	remotePeer peer
+	connSpeed  int
+	trafType   TrafficType
+}
+
+type peerPieceReport struct {
+	remotePeer         peer
+	reportedPieceIndex int
+}
+
 type peerConnection struct {
 	otherPeer  peer
 	connection net.Conn
 	pieceCount int
-
-	remotePeerBitfield customdatatypes.FixedSizeBitfield
 
 	input          chan peerMessage
 	output         chan connMessage
@@ -124,7 +133,8 @@ func calcConnectionSpeed(dataPoints []int) int {
 	return rollingAverage / len(dataPoints)
 }
 
-func (pc *peerConnection) launchConnectionRoutines(dataReportChan chan dataExchangeReport) {
+func (pc *peerConnection) launchConnectionRoutines(dataReportsChan chan dataExchangeReport, speedReportChan chan speedExchangeReport, peerPieceChan chan peerPieceReport) {
+	// TODO: Make channels arguments one way
 	forwarderStateUpdater := make(chan StateUpdateType)
 	receiverStateUpdater := make(chan StateUpdateType)
 
@@ -133,7 +143,7 @@ func (pc *peerConnection) launchConnectionRoutines(dataReportChan chan dataExcha
 
 	peerBitfieldUpdater := make(chan []byte)
 
-	go pc.connDataManager(forwarderStateUpdater, receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater, dataReportChan)
+	go pc.connDataManager(forwarderStateUpdater, receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater, dataReportsChan, speedReportChan, peerPieceChan)
 	go pc.forwarderController(forwarderStateUpdater)
 	go pc.receiverController(receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater)
 }
@@ -200,12 +210,12 @@ func (pc *peerConnection) receiverController(stateUpdater chan<- StateUpdateType
 	}
 }
 
-func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdateType, receiverStateUpdate <-chan StateUpdateType, peerIndexUpdate <-chan int, receiverDataRateUpdate <-chan int, peerBitfieldUpdate <-chan []byte, dataReportChan chan dataExchangeReport) {
+func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdateType, receiverStateUpdate <-chan StateUpdateType, peerIndexUpdate <-chan int, receiverDataRateUpdate <-chan int, peerBitfieldUpdate <-chan []byte, dataReportChan chan dataExchangeReport, speedReportChan chan speedExchangeReport, peerPieceChan chan peerPieceReport) {
 	downloadDataCounter := 0
-	dataTransferSpeed := 0
+	downloadTransferSpeed := 0
 
 	downloadRates := make([]int, 100)
-	dataRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
+	downloadRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
 
 	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
 	peerBitfield, err := pc.createRemotePeerBitfield()
@@ -241,6 +251,10 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 			}
 		case newHas := <-peerIndexUpdate:
 			peerBitfield.SetBit(newHas)
+			// TODO: Now that we're storing all of the remote peer bitfields in the torrentStats, consider whether we should still store them here.
+			// It might be a good idea for performance, aka leaving the one in torrentStats just for the sake of the UI.
+			// Think on this later.
+			peerPieceChan <- peerPieceReport{remotePeer: pc.otherPeer, reportedPieceIndex: newHas}
 		case dataReport := <-receiverDataRateUpdate:
 			downloadDataCounter += dataReport
 			dataReportChan <- dataExchangeReport{remotePeer: pc.otherPeer, trafType: IncomingTraffic, exchangedDataCount: dataReport}
@@ -250,11 +264,12 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 			pieceCheckResult, _ := peerBitfield.IsSet(index)
 			pc.pieceStatus <- pieceCheckResult
 		case <-pc.speedRequests:
-			pc.speedReplies <- dataTransferSpeed
-		case <-dataRateTicker.C:
+			pc.speedReplies <- downloadTransferSpeed
+		case <-downloadRateTicker.C:
 			downloadRates = addDataPoint(downloadRates, downloadDataCounter)
-			dataTransferSpeed = calcConnectionSpeed(downloadRates)
+			downloadTransferSpeed = calcConnectionSpeed(downloadRates)
 			downloadDataCounter = 0
+			speedReportChan <- speedExchangeReport{remotePeer: pc.otherPeer, trafType: IncomingTraffic}
 		case bitfield := <-peerBitfieldUpdate:
 			// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
 			err := peerBitfield.ImportBitfield(bitfield)
@@ -461,18 +476,20 @@ func (pc *peerConnection) receiverRoutine(msgOutput chan<- peerMessage) {
 	buffcon := bufio.NewReader(pc.connection)
 
 	for {
-		// TODO: Perhaps we shouldn't even be accepting data from choked peers?
+		// TODO: Perhaps we shouldn't even be accepting data from choked peers? (we have to, but we should just dismiss some)
 		peerMessage, err := pc.receiveMessage(buffcon)
 		if err != nil {
 			// TODO: Handle this more nicely, though idk how, cause this is in a goroutine
-			panic(err)
-			/*slog.LogAttrs(
+			//panic(err)
+			slog.LogAttrs(
 				context.Background(),
 				slog.LevelError,
 				"Error receiving message from remote peer. Connection dropped.",
 				slog.String("peerIP", pc.otherPeer.ip),
 				slog.Int("PeerPort", int(pc.otherPeer.port)),
-			)*/
+			)
+			// TODO: Just a temporary patch
+			time.Sleep(10000 * time.Millisecond)
 		}
 		msgOutput <- peerMessage
 	}

@@ -1,16 +1,20 @@
 package torrentclient
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const clientID = "TA"
 const clientVersion = "0001"
+
+const statusUpdateInterval = 1500 * time.Millisecond
 
 // TorrentClient - A representation of a bittorrent client that can handle multiple torrents at once.
 // MUST be initialized using the NewTorrentClient function below
@@ -18,6 +22,8 @@ type TorrentClient struct {
 	PeerID        customdatatypes.CustomHash
 	torrentParser TorrentParser
 	torrents      []torrentHost
+
+	AppContext context.Context
 }
 
 /*func StartListening() {
@@ -48,13 +54,35 @@ func NewTorrentClient() *TorrentClient {
 	return &TorrentClient{PeerID: generatePeerID()}
 }
 
+func (tc *TorrentClient) ClientRoutine() {
+	statusUpdatesTicker := time.NewTicker(statusUpdateInterval)
+
+	for {
+		select {
+		case <-statusUpdatesTicker.C:
+			torrentStatsList := make([]TorrentStatsDTO, 0)
+
+			for _, th := range tc.torrents {
+				th.statusUpdateRequest <- true
+			}
+
+			for _, th := range tc.torrents {
+				torrentStatsList = append(torrentStatsList, <-th.torrentStats.statusUpdatesReply)
+			}
+
+			//fmt.Println(torrentStatsList)
+			runtime.EventsEmit(tc.AppContext, "torrentStatsUpdated", torrentStatsList)
+		}
+	}
+}
+
 func (tc *TorrentClient) AddTorrent(torrentFilePath string) error {
 	newTorrentData, torrentParsingError := tc.torrentParser.ParseTorrentFile(torrentFilePath)
 
 	if torrentParsingError != nil {
 		return torrentParsingError
 	}
-	torrentStats, torrentStatsCreationError := NewTorrentStats(len(newTorrentData.PieceHashes))
+	torrentStats, torrentStatsCreationError := NewTorrentStats(newTorrentData.Infohash, len(newTorrentData.PieceHashes))
 
 	if torrentStatsCreationError != nil {
 		return torrentStatsCreationError

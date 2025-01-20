@@ -12,7 +12,7 @@ import (
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
 )
 
-const piecesDownloadNum int = 1
+const piecesDownloadNum int = 20
 const downloadersNum int = 4
 const unchokingInterval time.Duration = 10 * time.Second
 const optimisticUnchokingInterval time.Duration = 30 * time.Second
@@ -44,7 +44,7 @@ func (pcm *PeerConnectionManager) establishConnection(peer peer, tData TorrentDa
 	return newConnection, nil
 }
 
-func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData TorrentData, peerID customdatatypes.CustomHash, connectionOutput chan connMessage, assemblerInput chan pieceMessage, dataReportsChan chan dataExchangeReport) {
+func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData TorrentData, peerID customdatatypes.CustomHash, connectionOutput chan connMessage, assemblerInput chan pieceMessage, dataReportsChan chan dataExchangeReport, speedReportChan chan speedExchangeReport, peerPieceChan chan peerPieceReport) {
 	for _, peer := range peersList {
 		peerConnection, err := pcm.establishConnection(peer, tData, connectionOutput, peerID, assemblerInput)
 
@@ -59,7 +59,7 @@ func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData T
 
 		pcm.peerConnections = append(pcm.peerConnections, peerConnection)
 
-		peerConnection.launchConnectionRoutines(dataReportsChan)
+		peerConnection.launchConnectionRoutines(dataReportsChan, speedReportChan, peerPieceChan)
 	}
 }
 
@@ -103,7 +103,7 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 					unconnectedPeers = append(unconnectedPeers, peer)
 				}
 			}
-			pcm.establishConnections(unconnectedPeers, torrentData, peerID, connectionOutput, assemblerInput, tStats.dataReportsChan)
+			pcm.establishConnections(unconnectedPeers, torrentData, peerID, connectionOutput, assemblerInput, tStats.dataReportsChan, tStats.speedReportsChan, tStats.newPeerPiecesChan)
 			if len(requestedPieces) == 0 {
 				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
 			}
