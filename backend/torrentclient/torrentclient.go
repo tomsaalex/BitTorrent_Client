@@ -8,13 +8,10 @@ import (
 	"time"
 
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const clientID = "TA"
 const clientVersion = "0001"
-
-const statusUpdateInterval = 1500 * time.Millisecond
 
 // TorrentClient - A representation of a bittorrent client that can handle multiple torrents at once.
 // MUST be initialized using the NewTorrentClient function below
@@ -24,6 +21,10 @@ type TorrentClient struct {
 	torrents      []torrentHost
 
 	AppContext context.Context
+}
+
+type AggregateReport struct {
+	Torrents []TorrentDTO `json:"torrents"`
 }
 
 /*func StartListening() {
@@ -54,26 +55,21 @@ func NewTorrentClient() *TorrentClient {
 	return &TorrentClient{PeerID: generatePeerID()}
 }
 
-func (tc *TorrentClient) ClientRoutine() {
-	statusUpdatesTicker := time.NewTicker(statusUpdateInterval)
+func (tc *TorrentClient) GenerateAggregateReport() AggregateReport {
+	torrentStatsList := make([]TorrentDTO, 0)
 
-	for {
-		select {
-		case <-statusUpdatesTicker.C:
-			torrentStatsList := make([]TorrentStatsDTO, 0)
-
-			for _, th := range tc.torrents {
-				th.statusUpdateRequest <- true
-			}
-
-			for _, th := range tc.torrents {
-				torrentStatsList = append(torrentStatsList, <-th.torrentStats.statusUpdatesReply)
-			}
-
-			//fmt.Println(torrentStatsList)
-			runtime.EventsEmit(tc.AppContext, "torrentStatsUpdated", torrentStatsList)
-		}
+	for _, th := range tc.torrents {
+		th.torrentUpdateRequest <- true
 	}
+
+	for _, th := range tc.torrents {
+		torrentDTO := <-th.torrentUpdateReply
+		torrentStatsList = append(torrentStatsList, torrentDTO)
+	}
+
+	//runtime.EventsEmit(tc.AppContext, "torrentStatsUpdated", torrentStatsList)
+	aggregateReport := AggregateReport{Torrents: torrentStatsList}
+	return aggregateReport
 }
 
 func (tc *TorrentClient) AddTorrent(torrentFilePath string) error {

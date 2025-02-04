@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -214,7 +213,7 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 	downloadDataCounter := 0
 	downloadTransferSpeed := 0
 
-	downloadRates := make([]int, 100)
+	downloadRates := make([]int, 10)
 	downloadRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
 
 	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
@@ -269,7 +268,7 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 			downloadRates = addDataPoint(downloadRates, downloadDataCounter)
 			downloadTransferSpeed = calcConnectionSpeed(downloadRates)
 			downloadDataCounter = 0
-			speedReportChan <- speedExchangeReport{remotePeer: pc.otherPeer, trafType: IncomingTraffic}
+			speedReportChan <- speedExchangeReport{remotePeer: pc.otherPeer, connSpeed: downloadTransferSpeed, trafType: IncomingTraffic}
 		case bitfield := <-peerBitfieldUpdate:
 			// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
 			err := peerBitfield.ImportBitfield(bitfield)
@@ -815,11 +814,10 @@ func (pc *peerConnection) sendHave(pieceIndex int) error {
 
 	encodedHaveMsg := haveBuffer.Bytes()
 
-	numWritten, writeErr := pc.connection.Write(encodedHaveMsg)
+	_, writeErr := pc.connection.Write(encodedHaveMsg)
 	if writeErr != nil {
 		return &PeerCommunicationError{Message: "Couldn't send have", InvolvedPeer: pc.otherPeer}
 	}
-	fmt.Println(numWritten)
 
 	return nil
 }

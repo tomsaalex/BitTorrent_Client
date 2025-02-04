@@ -1,7 +1,29 @@
+
 import { TopBar } from "../Components/TopBar";
+import { useEffect } from "react";
+import { importTorrentsList, selectTorrents } from "../slices/torrentSlice";
+import { useAppDispatch, useAppSelector } from "../app/hooks";
+import { useSelector } from "react-redux";
+import TorrentsList from "../Components/TorrentsList";
 
 export function TorrentsPage() {
+    const torrentsFetchInterval = 1500;
+    const dispatch = useAppDispatch();
+    const torrentsList = useAppSelector(selectTorrents)
+
+    useEffect(() => {
+        // Fetch torrents every 1.5s
+        const interval = setInterval(() => {
+            dispatch(importTorrentsList());
+        }, torrentsFetchInterval);
+
+        return () => { clearInterval(interval); }
+    }, []);
+
     return (
-        <TopBar />
+        <>
+            <TopBar />
+            <TorrentsList torrents={torrentsList} />
+        </>
     )
 }

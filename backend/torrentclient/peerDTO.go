@@ -1,7 +1,7 @@
 package torrentclient
 
 type peerDTO struct {
-	peerID string
-	ip     string
-	port   uint16
+	peerID string `json:"peerID"`
+	ip     string `json:"ip"`
+	port   uint16 `json:"port"`
 }

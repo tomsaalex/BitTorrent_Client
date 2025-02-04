@@ -61,6 +61,10 @@ func (bf *FixedSizeBitfield) IsSet(bitIndex int) (bool, error) {
 	return (bf.internalField[byteNum]>>(7-bitToQuery))&1 == 1, nil
 }
 
+func (bf *FixedSizeBitfield) BitsSetCount() int {
+	return bf.bitsSet
+}
+
 func (bf *FixedSizeBitfield) IsFull() bool {
 	return bf.bitsSet == bf.bitCount
 	/*

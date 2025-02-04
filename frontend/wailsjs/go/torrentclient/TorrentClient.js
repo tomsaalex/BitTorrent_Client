@@ -6,6 +6,6 @@ export function AddTorrent(arg1) {
   return window['go']['torrentclient']['TorrentClient']['AddTorrent'](arg1);
 }
 
-export function ClientRoutine() {
-  return window['go']['torrentclient']['TorrentClient']['ClientRoutine']();
+export function GenerateAggregateReport() {
+  return window['go']['torrentclient']['TorrentClient']['GenerateAggregateReport']();
 }

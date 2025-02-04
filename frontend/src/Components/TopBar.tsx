@@ -6,17 +6,9 @@ import { useEffect } from "react";
 import { EventsOn } from "../../wailsjs/runtime/runtime"
 
 export function TopBar() {
-
-    useEffect(() => {
-        EventsOn("torrentStatsUpdated", (torrentDataArray: any) => {
-            console.log(torrentDataArray)
-        });
-
-    }, [])
-
     return (
         <IconContext.Provider value={{ size: "2em" }}>
-            <div className="flex flex-row fixed top-0 border-b w-screen items-center justify-between">
+            <div className="flex flex-row top-0 border-b w-screen items-center justify-between">
                 <ControlButtonsArray />
                 <FilterControl />
             </div>

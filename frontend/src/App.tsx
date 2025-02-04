@@ -4,7 +4,7 @@ import { TorrentsPage } from './Pages/TorrentsPage'
 
 function App() {
     return (
-        <TorrentsPage/>
+        <TorrentsPage />
     )
 }
 

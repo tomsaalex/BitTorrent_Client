@@ -25,6 +25,9 @@ type torrentHost struct {
 	statusUpdateRequest chan<- bool
 	statusUpdateReply   <-chan TorrentStatsDTO
 
+	torrentUpdateRequest chan bool
+	torrentUpdateReply   chan TorrentDTO
+
 	peerID                customdatatypes.CustomHash
 	trackConnection       trackerConnection
 	peerConnectionManager PeerConnectionManager
@@ -140,12 +143,24 @@ func (th *torrentHost) torrentManager() {
 					slog.String("method", "torrentManager"),
 				)
 			}
+		case <-th.torrentUpdateRequest:
+			th.statusUpdateRequest <- true
+			torrentStatsDTO := <-th.statusUpdateReply
+			torrentDTO := TorrentDTO{}
+			torrentDTO.TorrentData = torrentDataToDTO(&th.torrentData)
+			torrentDTO.TorrentStats = torrentStatsDTO
+
+			th.torrentUpdateReply <- torrentDTO
 		}
 	}
 }
 
 func NewTorrentHost(torrentData TorrentData, torrentStats TorrentStats, peerID customdatatypes.CustomHash, pcm PeerConnectionManager) *torrentHost {
-	reqChan, replyChan := torrentStats.statusUpdatesChannels()
-	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID, peerConnectionManager: pcm, statusUpdateRequest: reqChan, statusUpdateReply: replyChan}
+	statsReqChan, statsReplyChan := torrentStats.statusUpdatesChannels()
+
+	torrReqChan := make(chan bool)
+	torrReplyChan := make(chan TorrentDTO)
+
+	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID, peerConnectionManager: pcm, statusUpdateRequest: statsReqChan, statusUpdateReply: statsReplyChan, torrentUpdateRequest: torrReqChan, torrentUpdateReply: torrReplyChan}
 	return newTorrent
 }

@@ -1,8 +1,6 @@
 package torrentclient
 
 import (
-	"fmt"
-
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
 )
 
@@ -99,7 +97,6 @@ func (ts *TorrentStats) StatsKeeper() {
 			}
 
 			ts.connectionDataStatuses[dr.remotePeer.fullAddress()] = connectionStats
-			fmt.Println(ts.downloadedBytes)
 		case sr := <-ts.speedReportsChan:
 			// TODO: Consider making this channel (ts.speedReportsChan) buffered for performance reasons
 			connectionStats, found := ts.connectionDataStatuses[sr.remotePeer.fullAddress()]
@@ -112,6 +109,8 @@ func (ts *TorrentStats) StatsKeeper() {
 			} else {
 				connectionStats.uploadSpeed = sr.connSpeed
 			}
+
+			ts.connectionDataStatuses[sr.remotePeer.fullAddress()] = connectionStats
 		case pr := <-ts.newPeerPiecesChan:
 			// TODO: Consider making this channel (ts.newPeerPiecesChan) buffered for performance reasons
 			connectionStats, found := ts.connectionDataStatuses[pr.remotePeer.fullAddress()]

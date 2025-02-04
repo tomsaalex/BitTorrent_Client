@@ -1,26 +1,25 @@
 package torrentclient
 
 type ConnectionDataStatusDTO struct {
-	DownloadedData int
-	UploadedData   int
+	DownloadedData int `json:"downloadedData"`
+	UploadedData   int `json:"uploadedData"`
 
-	DownloadSpeed int
-	UploadSpeed   int
+	DownloadSpeed int `json:"downloadSpeed"`
+	UploadSpeed   int `json:"uploadSpeed"`
 
-	Peer         peerDTO
-	PeerBitfield []byte
+	Peer         peerDTO `json:"peerDTO"`
+	PeerBitfield []byte  `json:"peerBitfield"`
 }
 
 type TorrentStatsDTO struct {
-	TorrentInfohash string
+	UploadedBytes   int `json:"uploadedBytes"`
+	DownloadedBytes int `json:"downloadedBytes"`
 
-	UploadedBytes   int
-	DownloadedBytes int
+	ConnectionDataStatuses map[string]ConnectionDataStatusDTO `json:"connectionDataStatuses"`
 
-	ConnectionDataStatuses map[string]ConnectionDataStatusDTO
-
-	PiecesStoredToDisk []byte
-	RequestedPieces    []int
+	NumberOfPiecesOnDisk int    `json:"piecesOnDiskCount"`
+	PiecesStoredToDisk   []byte `json:"piecesStoredToDisk"`
+	RequestedPieces      []int  `json:"requestedPieces"`
 }
 
 func connectionDataStatusToDTO(cds *connectionDataStatus) ConnectionDataStatusDTO {
@@ -48,6 +47,7 @@ func torrentStatsToDTO(tStats *TorrentStats) TorrentStatsDTO {
 	newDTO.UploadedBytes = tStats.uploadedBytes
 	newDTO.DownloadedBytes = tStats.downloadedBytes
 
+	newDTO.NumberOfPiecesOnDisk = tStats.piecesStoredToDisk.BitsSetCount()
 	newDTO.PiecesStoredToDisk = tStats.piecesStoredToDisk.ExposeBitfield()
 	newDTO.RequestedPieces = make([]int, len(tStats.requestedPieces))
 
@@ -60,8 +60,6 @@ func torrentStatsToDTO(tStats *TorrentStats) TorrentStatsDTO {
 
 		newDTO.ConnectionDataStatuses[key] = cdsDTO
 	}
-
-	newDTO.TorrentInfohash = tStats.torrentInfohash.String()
 
 	return newDTO
 }

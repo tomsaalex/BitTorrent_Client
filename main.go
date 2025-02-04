@@ -55,7 +55,6 @@ func main() {
 			app.ctx = ctx
 			client.AppContext = ctx
 
-			go client.ClientRoutine()
 			client.AddTorrent("torrent_files/Atherton - Rivers of Fire.mp3.torrent")
 			/*
 				hwnd := win.FindWindow(nil, syscall.StringToUTF16Ptr("BitTorrent_Client"))
