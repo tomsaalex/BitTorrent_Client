@@ -1,5 +1,6 @@
 import { torrentclient } from "../../wailsjs/go/models";
 import { bytesToUpperUnit } from "../utils/utils";
+import { ProgressBar } from "./ProgressBar";
 
 interface TorrentListItemProps {
     torrent: torrentclient.TorrentDTO
@@ -17,15 +18,15 @@ export default function TorrentListItem({ torrent }: TorrentListItemProps) {
     }
 
     const progress = (100 * torrent.torrentStats.piecesOnDiskCount / torrent.torrentData.pieceNumber)
-    let ratio: number | string;
+    let ratio: string;
     if (torrent.torrentStats.downloadedBytes == 0) {
         if (torrent.torrentStats.uploadedBytes == 0) {
             ratio = "-";
         } else {
-            ratio = 0;
+            ratio = (0).toFixed(2);
         }
     } else {
-        ratio = torrent.torrentStats.uploadedBytes / torrent.torrentStats.downloadedBytes
+        ratio = (torrent.torrentStats.uploadedBytes / torrent.torrentStats.downloadedBytes).toFixed(2);
     }
 
     const typedTorrentSize = bytesToUpperUnit(torrentSize)
@@ -40,7 +41,7 @@ export default function TorrentListItem({ torrent }: TorrentListItemProps) {
             </td>
             <td>{typedTorrentSize.dataAmount.toFixed(1)} {typedTorrentSize.unit}</td>
             <td>
-                {progress == 100 ? progress.toFixed(0) : progress.toFixed(1)}%
+                <ProgressBar progressPercent={progress}></ProgressBar>
             </td>
             <td>
                 {typedDownloadSpeed.dataAmount.toFixed(1)} {typedDownloadSpeed.unit}/s
@@ -54,6 +55,6 @@ export default function TorrentListItem({ torrent }: TorrentListItemProps) {
             <td>
                 {torrent.torrentData.private ? "Yes" : "No"}
             </td>
-        </tr>
+        </tr >
     )
 }

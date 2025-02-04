@@ -10,6 +10,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed all:frontend/dist
@@ -54,8 +55,32 @@ func main() {
 		OnStartup: func(ctx context.Context) {
 			app.ctx = ctx
 			client.AppContext = ctx
+			runtime.EventsOn(ctx, "selectFile", func(optionalData ...interface{}) {
+				// TODO: this entire event should be handled somewhere else with more frontend interaction. (double checking the file is right and showing the contents of the torrent and such)
 
-			client.AddTorrent("torrent_files/Atherton - Rivers of Fire.mp3.torrent")
+				filepath, err := runtime.OpenFileDialog(ctx, runtime.OpenDialogOptions{})
+
+				if err != nil {
+					// TODO: Obviously this error needs to be sent to the frontend
+					slog.LogAttrs(
+						context.Background(),
+						slog.LevelError,
+						"File selection failed",
+					)
+					return
+				}
+
+				if len(filepath) == 0 {
+					slog.LogAttrs(
+						context.Background(),
+						slog.LevelInfo,
+						"User cancelled file selection",
+					)
+					return
+				}
+
+				client.AddTorrent(filepath)
+			})
 			/*
 				hwnd := win.FindWindow(nil, syscall.StringToUTF16Ptr("BitTorrent_Client"))
 				win.SetWindowLong(hwnd, win.GWL_EXSTYLE, win.GetWindowLong(hwnd, win.GWL_EXSTYLE)|win.WS_EX_LAYERED)*/
