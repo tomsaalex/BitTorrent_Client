@@ -14,7 +14,7 @@ import (
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
 )
 
-const piecesDownloadNum int = 1
+const piecesDownloadNum int = 15
 const downloadersNum int = 4
 const unchokingInterval time.Duration = 10 * time.Second
 const optimisticUnchokingInterval time.Duration = 30 * time.Second
@@ -90,6 +90,9 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			if len(newPeers) == 0 {
 				continue
 			}
+
+			oldConnNumber := len(pcm.peerConnections)
+
 			unconnectedPeers := make([]peer, 0)
 			for _, peer := range newPeers {
 				connected := false
@@ -105,16 +108,20 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			}
 			pcm.establishConnections(unconnectedPeers, torrentData, peerID, connectionOutput, assemblerInput, tStats.dataReportsChan, tStats.speedReportsChan, tStats.newPeerPiecesChan)
 
-			// TODO: Replace peer{} after you implement optimistic unchoking
-			/*pcm.changeUnchokedDownloaders(peer{}, requestedPieces)
-			if len(requestedPieces) < piecesDownloadNum {
-				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
-			}*/
+			if oldConnNumber == 0 {
+				tStats.requestedPiecesRequest <- true
+				requestedPieces := <-tStats.requestedPiecesReply
+
+				pcm.changeUnchokedDownloaders(peer{}, tStats)
+				if len(requestedPieces) < piecesDownloadNum {
+					pcm.schedulePiecesForDownload(&torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), torrentData.PieceLength)
+				}
+			}
+
 		case receivedMessage := <-connectionOutput:
 			rawMessage := receivedMessage.peerMsg
 			switch peerMessage := rawMessage.(type) {
 			case pieceMessage:
-				// Remove the piece from the list of requested blocks.
 				fmt.Println("Got block. Piece index #" + strconv.Itoa(peerMessage.index) + " - block start: " + strconv.Itoa(peerMessage.begin))
 				tStats.obtainedBlocksChan <- BlockRequest{pieceIndex: peerMessage.index, blockStart: peerMessage.begin}
 
@@ -124,9 +131,12 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			case unchokeMessage:
 				// This makes the client start scheduling pieces faster, without waiting for the regular timer.
 				// It prevents most of the annoying 10-15 seconds wait when the download starts.
-				/*if len(requestedPieces) < piecesDownloadNum {
-					pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
-				}*/
+				tStats.requestedPiecesRequest <- true
+				requestedPieces := <-tStats.requestedPiecesReply
+
+				if len(requestedPieces) < piecesDownloadNum {
+					pcm.schedulePiecesForDownload(&torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
+				}
 			case requestMessage:
 				// TODO: Add this when you implement uploading content
 			case cancelMessage:
@@ -144,6 +154,7 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			pieceToWriter <- receivedPiece
 
 			tStats.obtainedPiecesChan <- receivedPiece.pieceIndex
+
 			tStats.requestedPiecesRequest <- true
 			requestedPieces := <-tStats.requestedPiecesReply
 
@@ -372,8 +383,6 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(tData *TorrentData, 
 		for !scheduleSuccessful {
 			randomIndex := rand.IntN(len(unselectedPieces))
 			pieceIndex := unselectedPieces[randomIndex]
-
-			fmt.Println(unselectedPieces)
 
 			// TODO: THIS ENTIRE MARKED SECTION IS NOT PROPERLY DONE
 			// There are situations where you would want to re-request pieces, but that involves
