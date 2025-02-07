@@ -1,7 +1,7 @@
 package torrentclient
 
 type TorrentDataDTO struct {
-	Announce     string `json:announce`
+	Announce     string `json:"announce"`
 	CreatedBy    string `json:"createdBy"`    // optional
 	CreationDate int    `json:"creationDate"` // optional
 	Encoding     string `json:"encoding"`     // optional

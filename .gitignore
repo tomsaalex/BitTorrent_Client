@@ -44,5 +44,6 @@ build/bin
 node_modules
 frontend/dist
 
-# Input files for testing
+# Input/Output files for testing
 torrent_files
+download_location

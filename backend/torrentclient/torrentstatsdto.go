@@ -32,9 +32,9 @@ func connectionDataStatusToDTO(cds *connectionDataStatus) ConnectionDataStatusDT
 	newDTO.UploadSpeed = cds.uploadSpeed
 
 	newDTO.Peer = peerDTO{}
-	newDTO.Peer.ip = cds.peer.ip
-	newDTO.Peer.port = cds.peer.port
-	newDTO.Peer.peerID = cds.peer.peerID.String()
+	newDTO.Peer.Ip = cds.peer.ip
+	newDTO.Peer.Port = cds.peer.port
+	newDTO.Peer.PeerID = cds.peer.peerID.String()
 
 	newDTO.PeerBitfield = cds.peerBitfield.ExposeBitfield()
 

@@ -2,13 +2,14 @@ package torrentclient
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 )
+
+const TEMP_DOWNLOAD_LOCATION = "download_location/"
 
 type PieceFileMapping struct {
 	p                piece
@@ -71,8 +72,7 @@ func (dm *DiskManager) writePieceMappingToFile(actualPath string, pm PieceFileMa
 	defer file.Close()
 
 	// Seek to the correct position
-	newOffset, err := file.Seek(pm.fileOffset, io.SeekStart)
-	fmt.Print(newOffset)
+	_, err = file.Seek(pm.fileOffset, io.SeekStart)
 	if err != nil {
 		return &IOError{Message: "Couldn't seek in file: " + joinedPath}
 	}
@@ -155,7 +155,7 @@ func (dm *DiskManager) fileWriter(pieceInput <-chan piece, pieceStoredAnnounce c
 		pieceMappings := dm.MapPieceToFiles(piece, tData)
 
 		for _, pm := range pieceMappings {
-			joinedPath := filepath.Join(directoryName, pm.filePath)
+			joinedPath := filepath.Join(TEMP_DOWNLOAD_LOCATION, directoryName, pm.filePath)
 			_, fileExists := fileIndex[joinedPath]
 			if !fileExists {
 				var err error

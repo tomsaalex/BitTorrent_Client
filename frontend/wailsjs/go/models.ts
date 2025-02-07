@@ -111,7 +111,7 @@ export namespace torrentclient {
 	    }
 	}
 	export class TorrentDataDTO {
-	    Announce: string;
+	    announce: string;
 	    createdBy: string;
 	    creationDate: number;
 	    encoding: string;
@@ -131,7 +131,7 @@ export namespace torrentclient {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.Announce = source["Announce"];
+	        this.announce = source["announce"];
 	        this.createdBy = source["createdBy"];
 	        this.creationDate = source["creationDate"];
 	        this.encoding = source["encoding"];

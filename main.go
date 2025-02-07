@@ -81,9 +81,9 @@ func main() {
 
 				client.AddTorrent(filepath)
 			})
-			/*
-				hwnd := win.FindWindow(nil, syscall.StringToUTF16Ptr("BitTorrent_Client"))
-				win.SetWindowLong(hwnd, win.GWL_EXSTYLE, win.GetWindowLong(hwnd, win.GWL_EXSTYLE)|win.WS_EX_LAYERED)*/
+
+			//hwnd := win.FindWindow(nil, syscall.StringToUTF16Ptr("BitTorrent_Client"))
+			//win.SetWindowLong(hwnd, win.GWL_EXSTYLE, win.GetWindowLong(hwnd, win.GWL_EXSTYLE)|win.WS_EX_LAYERED)
 
 		},
 		Bind: []interface{}{
@@ -95,7 +95,6 @@ func main() {
 	if err != nil {
 		println("Error:", err.Error())
 	}
-
 }
 
 /*

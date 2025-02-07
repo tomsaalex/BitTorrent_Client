@@ -2,6 +2,7 @@ package customdatatypes
 
 import (
 	"fmt"
+	"math/bits"
 
 	generalerrors "github.com/tomsaalex/BitTorrent_Client/backend/GeneralErrors"
 )
@@ -94,6 +95,14 @@ func (bf *FixedSizeBitfield) ExposeBitfield() []byte {
 	return append([]byte{}, bf.internalField...)
 }
 
+func (bf *FixedSizeBitfield) countAllSetBits() int {
+	setBitsCount := 0
+	for _, b := range bf.internalField {
+		setBitsCount += bits.OnesCount8(b)
+	}
+	return setBitsCount
+}
+
 func (bf *FixedSizeBitfield) ImportBitfield(data []byte) error {
 	expectedByteCount := (bf.bitCount + 7) / 8
 	if len(data) != expectedByteCount {
@@ -101,14 +110,17 @@ func (bf *FixedSizeBitfield) ImportBitfield(data []byte) error {
 	}
 
 	lastLegalBit := bf.bitCount % 8
-	for i := lastLegalBit; i <= 7; i++ {
-		bitState := (data[expectedByteCount-1]>>(7-i))&1 == 1
-		if bitState {
-			return &generalerrors.TypeInitializationError{TypeName: "FixedSizeBitfield", ErrorDetails: "Imported bitfield has extra bits set."}
+	if lastLegalBit != 0 {
+		for i := lastLegalBit; i <= 7; i++ {
+			bitState := (data[expectedByteCount-1]>>(7-i))&1 == 1
+			if bitState {
+				return &generalerrors.TypeInitializationError{TypeName: "FixedSizeBitfield", ErrorDetails: "Imported bitfield has extra bits set."}
+			}
 		}
 	}
 
 	bf.internalField = data
+	bf.bitsSet = bf.countAllSetBits()
 	return nil
 }
 

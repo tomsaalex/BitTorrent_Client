@@ -10,5 +10,5 @@ type PeerCommunicationError struct {
 }
 
 func (pce *PeerCommunicationError) Error() string {
-	return fmt.Sprintf("PeerCommunicationError: %s. InvolvedPeer: IP: %s, Port: %s", pce.Message, pce.InvolvedPeer.ip, pce.InvolvedPeer.port)
+	return fmt.Sprintf("PeerCommunicationError: %s. InvolvedPeer: IP: %s, Port: %d", pce.Message, pce.InvolvedPeer.ip, pce.InvolvedPeer.port)
 }

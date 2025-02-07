@@ -36,6 +36,7 @@ type TorrentStats struct {
 	connectionDataStatuses map[string]connectionDataStatus
 
 	piecesStoredToDisk customdatatypes.FixedSizeBitfield
+	requestedBlocks    []BlockRequest
 	requestedPieces    []int
 	unselectedPieces   []int
 
@@ -43,6 +44,13 @@ type TorrentStats struct {
 	requestedPiecesChan   chan int
 	pieceIndexFullRequest chan bool
 	pieceIndexFullReply   chan bool
+
+	obtainedBlocksChan  chan BlockRequest
+	requestedBlocksChan chan BlockRequest
+
+	cancelRequestsToPeerChan chan peerConnection
+	requestedBlocksRequest   chan bool
+	requestedBlocksReply     chan []BlockRequest
 
 	unselectedPiecesRequest chan bool
 	unselectedPiecesReply   chan []int
@@ -70,6 +78,12 @@ func (ts *TorrentStats) StatsKeeper() {
 			ts.markPieceAsObtained(pieceIndex)
 		case pieceIndex := <-ts.requestedPiecesChan:
 			ts.markPieceAsRequested(pieceIndex)
+		case block := <-ts.obtainedBlocksChan:
+			ts.markBlockAsObtained(block)
+		case blockReq := <-ts.requestedBlocksChan:
+			ts.markBlockAsRequested(blockReq)
+		case peerConn := <-ts.cancelRequestsToPeerChan:
+			ts.cancelRequestsToPeer(peerConn)
 		case <-ts.pieceIndexFullRequest:
 			ts.pieceIndexFullReply <- ts.pieceIndex.IsFull()
 		case <-ts.unselectedPiecesRequest:
@@ -80,6 +94,8 @@ func (ts *TorrentStats) StatsKeeper() {
 			// Sending the slice should be fine, since we're not changing the elements of the slice in another thread concurrently,
 			// but if I ever want that, this needs to make a copy.
 			ts.requestedPiecesReply <- ts.requestedPieces
+		case <-ts.requestedBlocksRequest:
+			ts.requestedBlocksReply <- ts.requestedBlocks
 		case dr := <-ts.dataReportsChan:
 			// TODO: Consider making this channel (ts.dataReportsChan) buffered for performance reasons
 			connectionStats, found := ts.connectionDataStatuses[dr.remotePeer.fullAddress()]
@@ -134,15 +150,6 @@ func (ts *TorrentStats) StatsKeeper() {
 func (ts *TorrentStats) markPieceAsObtained(pIndex int) {
 	ts.pieceIndex.SetBit(pIndex)
 
-	posToRem := -1
-	for i := 0; i < len(ts.unselectedPieces); i++ {
-		if ts.unselectedPieces[i] == pIndex {
-			posToRem = i
-		}
-	}
-
-	ts.unselectedPieces = append(ts.unselectedPieces[:posToRem], ts.unselectedPieces[posToRem+1:]...)
-
 	for i := len(ts.requestedPieces) - 1; i >= 0; i-- {
 		if ts.requestedPieces[i] == pIndex {
 			ts.requestedPieces = append(ts.requestedPieces[:i], ts.requestedPieces[i+1:]...)
@@ -152,6 +159,47 @@ func (ts *TorrentStats) markPieceAsObtained(pIndex int) {
 
 func (ts *TorrentStats) markPieceAsRequested(pIndex int) {
 	ts.requestedPieces = append(ts.requestedPieces, pIndex)
+
+	posToRem := -1
+	for i, unselectedPiece := range ts.unselectedPieces {
+		if unselectedPiece == pIndex {
+			posToRem = i
+		}
+	}
+
+	ts.unselectedPieces = append(ts.unselectedPieces[:posToRem], ts.unselectedPieces[posToRem+1:]...)
+}
+
+func (ts *TorrentStats) markBlockAsRequested(block BlockRequest) {
+	ts.requestedBlocks = append(ts.requestedBlocks, block)
+}
+
+func (ts *TorrentStats) markBlockAsObtained(block BlockRequest) {
+	posToRem := -1
+	for i, blockReq := range ts.requestedBlocks {
+		if blockReq.pieceIndex == block.pieceIndex && blockReq.blockStart == block.blockStart {
+			posToRem = i
+			break
+		}
+	}
+
+	ts.requestedBlocks = append(ts.requestedBlocks[:posToRem], ts.requestedBlocks[posToRem+1:]...)
+}
+
+func (ts *TorrentStats) cancelRequestsToPeer(peerConn peerConnection) {
+	validRequests := make([]BlockRequest, 0)
+	for _, req := range ts.requestedBlocks {
+		if req.remotePeer.equal(&peerConn.otherPeer) {
+			index := req.pieceIndex
+			begin := req.blockStart
+			length := req.blockLength
+			peerConn.input <- cancelMessage{index: index, begin: begin, length: length}
+		} else {
+			validRequests = append(validRequests, req)
+		}
+	}
+
+	ts.requestedBlocks = validRequests
 }
 
 func (ts *TorrentStats) statusUpdatesChannels() (chan<- bool, <-chan TorrentStatsDTO) {
@@ -187,6 +235,14 @@ func NewTorrentStats(infohash customdatatypes.CustomHash, pieceCount int) (Torre
 
 	torrentStats.pieceIndexFullRequest = make(chan bool)
 	torrentStats.pieceIndexFullReply = make(chan bool)
+
+	torrentStats.obtainedBlocksChan = make(chan BlockRequest)
+	torrentStats.requestedBlocksChan = make(chan BlockRequest)
+
+	torrentStats.requestedBlocksRequest = make(chan bool)
+	torrentStats.requestedBlocksReply = make(chan []BlockRequest)
+
+	torrentStats.cancelRequestsToPeerChan = make(chan peerConnection)
 
 	torrentStats.unselectedPiecesRequest = make(chan bool)
 	torrentStats.unselectedPiecesReply = make(chan []int)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -14,6 +15,10 @@ import (
 	generalerrors "github.com/tomsaalex/BitTorrent_Client/backend/GeneralErrors"
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
 )
+
+var failedSendCounter int = 0
+var successSendCounter int = 0
+var receiveCounter int = 0
 
 // A bit smaller than 2 minutes to make sure the connection survives
 const KEEP_ALIVE_TIME = time.Second * 110
@@ -175,7 +180,7 @@ func (pc *peerConnection) receiverController(stateUpdater chan<- StateUpdateType
 	receiverOutput := make(chan peerMessage)
 
 	go pc.receiverRoutine(receiverOutput)
-
+	pieceCounter := 0
 	for {
 		select {
 		case rawMessage := <-receiverOutput:
@@ -188,6 +193,7 @@ func (pc *peerConnection) receiverController(stateUpdater chan<- StateUpdateType
 				stateUpdater <- Choked
 			case unchokeMessage:
 				stateUpdater <- Unchoked
+				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
 			case interestedMessage:
 				stateUpdater <- Interested
 			case notInterestedMessage:
@@ -195,6 +201,8 @@ func (pc *peerConnection) receiverController(stateUpdater chan<- StateUpdateType
 			case haveMessage:
 				peerIndexUpdate <- peerMessage.pieceIndex
 			case pieceMessage:
+				pieceCounter++
+				fmt.Println("Pieces received: " + strconv.Itoa(pieceCounter))
 				pc.assemblerInput <- peerMessage
 				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
 				dataRateUpdate <- len(peerMessage.block)
@@ -273,6 +281,8 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 			// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
 			err := peerBitfield.ImportBitfield(bitfield)
 			if err != nil {
+				// TODO: Better error handling
+				panic(err)
 				// TODO: DROP CONNECTION
 			}
 		}
@@ -419,6 +429,7 @@ func (pc *peerConnection) forwarderRoutine(msgInput <-chan peerMessage) {
 				index := peerMessage.index
 				begin := peerMessage.begin
 				block := peerMessage.block
+
 				pc.sendPiece(index, begin, block)
 				slog.LogAttrs(
 					context.Background(),
@@ -433,6 +444,7 @@ func (pc *peerConnection) forwarderRoutine(msgInput <-chan peerMessage) {
 				index := peerMessage.index
 				begin := peerMessage.begin
 				length := peerMessage.length
+
 				pc.sendRequest(index, begin, length)
 				slog.LogAttrs(
 					context.Background(),
@@ -478,6 +490,7 @@ func (pc *peerConnection) receiverRoutine(msgOutput chan<- peerMessage) {
 		// TODO: Perhaps we shouldn't even be accepting data from choked peers? (we have to, but we should just dismiss some)
 		peerMessage, err := pc.receiveMessage(buffcon)
 		if err != nil {
+
 			// TODO: Handle this more nicely, though idk how, cause this is in a goroutine
 			//panic(err)
 			slog.LogAttrs(
@@ -614,6 +627,8 @@ func (pc *peerConnection) receiveMessage(buffcon *bufio.Reader) (peerMessage, er
 		begin := int(binary.BigEndian.Uint32(msgBuf[4:8]))
 		block := msgBuf[8:payloadLen]
 
+		receiveCounter++
+		fmt.Println("Received blocks: " + strconv.Itoa(receiveCounter))
 		slog.LogAttrs(
 			context.Background(),
 			slog.LevelInfo,
@@ -855,9 +870,14 @@ func (pc *peerConnection) sendRequest(index, begin, length int) error {
 
 	_, writeErr := pc.connection.Write(encodedRequestMsg)
 	if writeErr != nil {
-		return &PeerCommunicationError{Message: "Couldn't send request", InvolvedPeer: pc.otherPeer}
-	}
+		failedSendCounter++
+		fmt.Println("Failed sent messages: " + strconv.Itoa(failedSendCounter) + " / Successful sent messages: " + strconv.Itoa(successSendCounter))
 
+		return &PeerCommunicationError{Message: "Couldn't send request", InvolvedPeer: pc.otherPeer}
+
+	}
+	successSendCounter++
+	fmt.Println("Failed sent messages: " + strconv.Itoa(failedSendCounter) + " / Successful sent messages: " + strconv.Itoa(successSendCounter))
 	return nil
 }
 
