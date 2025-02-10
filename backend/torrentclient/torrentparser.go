@@ -132,6 +132,7 @@ func (tp *TorrentParser) extractTorrentData(rawTorrentData bencoding.BencodableV
 
 	if valuePresent {
 		newTorrentData.FileLength = fileLength
+		newTorrentData.TorrentSize = fileLength
 		return newTorrentData, nil // We're in Single File Mode, nothing else that follows matters
 	}
 

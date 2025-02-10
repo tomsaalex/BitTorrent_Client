@@ -85,10 +85,12 @@ func (th *torrentHost) torrentManager() {
 
 	havePieceAnnouncer := make(chan int)
 
+	blockRequestsInput := make(chan BlockRetrievalRequest)
+
 	go th.trackerManager(trackerEventsChannel, peerListChannel)
 	go th.torrentStats.StatsKeeper()
-	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, havePieceAnnouncer)
-	go th.diskManager.fileWriter(pieceToWriter, newStoredPieceChan, &th.torrentData)
+	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, havePieceAnnouncer, blockRequestsInput)
+	go th.diskManager.fileWriter(pieceToWriter, newStoredPieceChan, blockRequestsInput, &th.torrentData)
 	trackerEventsChannel <- T_STARTED
 
 	for {

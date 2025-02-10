@@ -1,9 +1,11 @@
 package torrentclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -18,80 +20,118 @@ const clientVersion = "0001"
 type TorrentClient struct {
 	PeerID        customdatatypes.CustomHash
 	torrentParser TorrentParser
-	torrents      []torrentHost
 
 	AppContext context.Context
+
+	addTorrentChan chan string
+
+	reportRequestChan chan bool
+	reportReplyChan   chan AggregateReport
+
+	servedTorrentRequest chan []byte
+	servedTorrentReply   chan (chan<- connBootstrapInfo)
 }
 
 type AggregateReport struct {
 	Torrents []TorrentDTO `json:"torrents"`
 }
 
-/*func StartListening() {
-	// listen on port 8000
-	var listener net.Listener
-	var port uint16
-	for port = 6881; port <= 6889; port++ {
-		listener, listeningError := net.Listen("tcp", ":"+strconv.FormatUint(uint64(port), 10))
-
-		if listeningError == nil {
-			break
-		}
-	}
-	fmt.Println("Client has started listening on port " + strconv.FormatUint(uint64(port), 10))
-
-	for {
-		peerConnection, _ := listener.Accept()
-
-
-	}
-}*/
-/*
-func InitiateConnection() {
-
-}*/
-
 func NewTorrentClient() *TorrentClient {
-	return &TorrentClient{PeerID: generatePeerID()}
+	tc := &TorrentClient{PeerID: generatePeerID()}
+
+	tc.addTorrentChan = make(chan string)
+
+	tc.reportRequestChan = make(chan bool)
+	tc.reportReplyChan = make(chan AggregateReport)
+
+	tc.servedTorrentRequest = make(chan []byte)
+	tc.servedTorrentReply = make(chan (chan<- connBootstrapInfo))
+
+	return tc
 }
 
-func (tc *TorrentClient) GenerateAggregateReport() AggregateReport {
+func (tc *TorrentClient) LaunchRoutines() {
+	go tc.clientRoutine()
+	go handleIncomingConnections(tc.servedTorrentRequest, tc.servedTorrentReply)
+
+}
+
+func (tc *TorrentClient) clientRoutine() {
+	torrents := make([]torrentHost, 0)
+
+	for {
+		select {
+		case torrentFilePath := <-tc.addTorrentChan:
+			newTorrent, err := tc.handleAddTorrent(torrentFilePath)
+			if err != nil {
+				// TODO: Better error handling, ideally on the frontend
+				log.Fatal(err)
+				continue
+			}
+
+			torrents = append(torrents, *newTorrent)
+
+			go newTorrent.torrentManager()
+
+		case <-tc.reportRequestChan:
+			tc.reportReplyChan <- tc.handleGenerateAggregateReport(torrents)
+		case infohash := <-tc.servedTorrentRequest:
+			foundTorrent := false
+			for _, th := range torrents {
+				if bytes.Equal(th.torrentData.Infohash.HashBytes, infohash) {
+					tc.servedTorrentReply <- th.peerConnectionManager.connectionIntegration
+					foundTorrent = true
+					break
+				}
+			}
+			if !foundTorrent {
+				tc.servedTorrentReply <- nil
+			}
+		}
+	}
+}
+
+func (tc *TorrentClient) handleGenerateAggregateReport(torrents []torrentHost) AggregateReport {
 	torrentStatsList := make([]TorrentDTO, 0)
 
-	for _, th := range tc.torrents {
+	for _, th := range torrents {
 		th.torrentUpdateRequest <- true
 	}
 
-	for _, th := range tc.torrents {
+	for _, th := range torrents {
 		torrentDTO := <-th.torrentUpdateReply
 		torrentStatsList = append(torrentStatsList, torrentDTO)
 	}
 
-	//runtime.EventsEmit(tc.AppContext, "torrentStatsUpdated", torrentStatsList)
 	aggregateReport := AggregateReport{Torrents: torrentStatsList}
 	return aggregateReport
 }
 
-func (tc *TorrentClient) AddTorrent(torrentFilePath string) error {
+func (tc *TorrentClient) GenerateAggregateReport() AggregateReport {
+	tc.reportRequestChan <- true
+	return <-tc.reportReplyChan
+}
+
+func (tc *TorrentClient) handleAddTorrent(torrentFilePath string) (*torrentHost, error) {
 	newTorrentData, torrentParsingError := tc.torrentParser.ParseTorrentFile(torrentFilePath)
 
 	if torrentParsingError != nil {
-		return torrentParsingError
+		return nil, torrentParsingError
 	}
 	torrentStats, torrentStatsCreationError := NewTorrentStats(newTorrentData.Infohash, len(newTorrentData.PieceHashes))
 
 	if torrentStatsCreationError != nil {
-		return torrentStatsCreationError
+		return nil, torrentStatsCreationError
 	}
 
 	peerConnectionManager := newPeerConnectionManager()
 
-	newTorrentHost := NewTorrentHost(newTorrentData, torrentStats, tc.PeerID, *peerConnectionManager)
-	tc.torrents = append(tc.torrents, *newTorrentHost)
+	return NewTorrentHost(newTorrentData, torrentStats, tc.PeerID, *peerConnectionManager), nil
+}
 
-	go newTorrentHost.torrentManager()
-
-	return nil
+func (tc *TorrentClient) AddTorrent(torrentFilePath string) {
+	// TODO: Error handling in the frontend... Eventually
+	tc.addTorrentChan <- torrentFilePath
 }
 
 func generatePeerID() customdatatypes.CustomHash {

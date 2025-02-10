@@ -5,3 +5,5 @@ import {torrentclient} from '../models';
 export function AddTorrent(arg1:string):Promise<void>;
 
 export function GenerateAggregateReport():Promise<torrentclient.AggregateReport>;
+
+export function LaunchRoutines():Promise<void>;

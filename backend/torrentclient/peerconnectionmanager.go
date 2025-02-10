@@ -23,11 +23,14 @@ const blockSize = 16 * 1024
 
 type PeerConnectionManager struct {
 	peerConnections []peerConnection
+
+	connectionIntegration chan connBootstrapInfo
 }
 
 func newPeerConnectionManager() *PeerConnectionManager {
 	peerConnections := make([]peerConnection, 0)
-	return &PeerConnectionManager{peerConnections: peerConnections}
+	connectionIntegration := make(chan connBootstrapInfo)
+	return &PeerConnectionManager{peerConnections: peerConnections, connectionIntegration: connectionIntegration}
 }
 
 func (pcm *PeerConnectionManager) establishConnection(peer peer, tData TorrentData, connectionOutput chan connMessage, peerID customdatatypes.CustomHash, assemblerInput chan pieceMessage) (peerConnection, error) {
@@ -40,6 +43,7 @@ func (pcm *PeerConnectionManager) establishConnection(peer peer, tData TorrentDa
 	err = newConnection.performHandshake(tData.Infohash, peerID)
 
 	if err != nil {
+		newConnection.connection.Close()
 		return peerConnection{}, err
 	}
 
@@ -65,7 +69,39 @@ func (pcm *PeerConnectionManager) establishConnections(peersList []peer, tData T
 	}
 }
 
-func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, pieceToWriter chan<- piece, havePieceAnnouncer <-chan int) {
+func (pcm *PeerConnectionManager) establishIncomingConnection(connInfo connBootstrapInfo, tStats *TorrentStats, tData TorrentData, connectionOutput chan connMessage, peerID customdatatypes.CustomHash, assemblerInput chan pieceMessage, dataReportsChan chan dataExchangeReport, speedReportChan chan speedExchangeReport, peerPieceChan chan peerPieceReport) {
+	peerConnection := setupIncomingConnection(connInfo, tData, connectionOutput, assemblerInput)
+	err := peerConnection.sendHandshakeMsg(tData.Infohash, peerID)
+
+	if err != nil {
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelError,
+			err.Error(),
+		) // TODO: Perhaps do better logging for this. Or handle it in a better place, if you think there is one.
+		return
+	}
+
+	peerConnection.otherPeer.peerID, err = peerConnection.receivePeerID()
+
+	if err != nil {
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelError,
+			err.Error(),
+		) // TODO: Perhaps do better logging for this. Or handle it in a better place, if you think there is one.
+		return
+	}
+
+	//tStats.bitfieldRequest <- true
+	//localBitfield := <-tStats.bitfieldReply
+	//peerConnection.input <- bitfieldMessage{bitfield: localBitfield.ExposeBitfield()}
+	pcm.peerConnections = append(pcm.peerConnections, peerConnection)
+
+	peerConnection.launchConnectionRoutines(dataReportsChan, speedReportChan, peerPieceChan)
+}
+
+func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, pieceToWriter chan<- piece, havePieceAnnouncer <-chan int, blockRetrievaRequests chan<- BlockRetrievalRequest) {
 	peerRequestChan <- true
 
 	connectionOutput := make(chan connMessage)
@@ -117,7 +153,6 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 					pcm.schedulePiecesForDownload(&torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), torrentData.PieceLength)
 				}
 			}
-
 		case receivedMessage := <-connectionOutput:
 			rawMessage := receivedMessage.peerMsg
 			switch peerMessage := rawMessage.(type) {
@@ -138,9 +173,25 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 					pcm.schedulePiecesForDownload(&torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
 				}
 			case requestMessage:
-				// TODO: Add this when you implement uploading content
+				validErr := validateRequestMessage(peerMessage, &torrentData)
+				if validErr != nil {
+					slog.LogAttrs(
+						context.Background(),
+						slog.LevelInfo,
+						"Discarded invalid request",
+						slog.String("method", "connectionManager"),
+						slog.String("peerIP", receivedMessage.peerConn.otherPeer.ip),
+						slog.Int("pieceIndex", peerMessage.index),
+						slog.Int("blockStart", peerMessage.begin),
+						slog.Int("blockLength", peerMessage.length),
+					)
+					continue
+				}
+
+				blockDestination := receivedMessage.peerConn.input
+				blockRetrievaRequests <- BlockRetrievalRequest{req: peerMessage, pieceOutput: blockDestination}
 			case cancelMessage:
-				// TODO Same as requestMessage, or when adding Endgame Mode, I suppose?
+				// TODO: Same as requestMessage, or when adding Endgame Mode, I suppose?
 			}
 		case receivedPiece := <-assemblerOutput:
 			slog.LogAttrs(
@@ -161,10 +212,6 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			if len(requestedPieces) < piecesDownloadNum {
 				pcm.schedulePiecesForDownload(&torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
 			}
-			/*fmt.Println("Pieces requested: " + strconv.Itoa(len(requestedPieces)) + "/" + strconv.Itoa(piecesDownloadNum))
-			if len(requestedPieces) < piecesDownloadNum {
-				pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum, torrentData.PieceLength)
-			}*/
 		case pieceIndex := <-havePieceAnnouncer:
 			slog.LogAttrs(
 				context.Background(),
@@ -176,7 +223,6 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 				newMsg := haveMessage{pieceIndex: pieceIndex}
 				pc.input <- newMsg
 			}
-
 		case <-regularUnchokeTicker.C:
 			slog.LogAttrs(
 				context.Background(),
@@ -192,6 +238,9 @@ func (pcm *PeerConnectionManager) connectionManager(torrentData TorrentData, tSt
 			if len(requestedPieces) < piecesDownloadNum {
 				pcm.schedulePiecesForDownload(&torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), torrentData.PieceLength)
 			}
+
+		case bootstrapInfo := <-pcm.connectionIntegration:
+			pcm.establishIncomingConnection(bootstrapInfo, tStats, torrentData, connectionOutput, peerID, assemblerInput, tStats.dataReportsChan, tStats.speedReportsChan, tStats.newPeerPiecesChan)
 		}
 	}
 }

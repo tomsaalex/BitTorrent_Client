@@ -35,6 +35,7 @@ func main() {
 	app := NewApp()
 
 	client := torrentclient.NewTorrentClient()
+	client.LaunchRoutines()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 

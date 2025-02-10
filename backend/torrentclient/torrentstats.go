@@ -69,6 +69,9 @@ type TorrentStats struct {
 	dataReportsChan   chan dataExchangeReport
 	speedReportsChan  chan speedExchangeReport
 	newPeerPiecesChan chan peerPieceReport
+
+	bitfieldRequest chan bool
+	bitfieldReply   chan customdatatypes.FixedSizeBitfield
 }
 
 func (ts *TorrentStats) StatsKeeper() {
@@ -143,6 +146,8 @@ func (ts *TorrentStats) StatsKeeper() {
 			ts.statusUpdatesReply <- torrentStatsToDTO(ts)
 		case pieceIndex := <-ts.storedPiecesAnnouncer:
 			ts.piecesStoredToDisk.SetBit(pieceIndex)
+		case <-ts.bitfieldRequest:
+			ts.bitfieldReply <- ts.piecesStoredToDisk
 		}
 	}
 }
@@ -261,6 +266,9 @@ func NewTorrentStats(infohash customdatatypes.CustomHash, pieceCount int) (Torre
 
 	torrentStats.statusUpdatesRequest = make(chan bool, 1)
 	torrentStats.statusUpdatesReply = make(chan TorrentStatsDTO, 1)
+
+	torrentStats.bitfieldRequest = make(chan bool)
+	torrentStats.bitfieldReply = make(chan customdatatypes.FixedSizeBitfield)
 
 	return torrentStats, nil
 }

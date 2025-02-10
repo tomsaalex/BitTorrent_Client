@@ -110,6 +110,24 @@ func newPeerConnection(peer peer, td TorrentData, output chan connMessage, assem
 	return peerConnection, nil
 }
 
+func setupIncomingConnection(connInfo connBootstrapInfo, td TorrentData, output chan connMessage, assemblerInput chan pieceMessage) peerConnection {
+	input := make(chan peerMessage)
+
+	cdRequests := make(chan bool)
+	cdReplies := make(chan connData)
+	pieceCheck := make(chan int)
+	pieceStatus := make(chan bool)
+	speedRequests := make(chan bool)
+	speedReplies := make(chan int)
+
+	tcpAddr := connInfo.conn.RemoteAddr().(*net.TCPAddr)
+
+	otherPeer := peer{ip: tcpAddr.IP.String(), port: tcpAddr.AddrPort().Port()}
+	peerConnection := peerConnection{otherPeer: otherPeer, connection: connInfo.conn, pieceCount: len(td.PieceHashes), input: input, output: output, assemblerInput: assemblerInput, connDataRequests: cdRequests, connDataReplies: cdReplies, pieceCheck: pieceCheck, pieceStatus: pieceStatus, speedRequests: speedRequests, speedReplies: speedReplies}
+
+	return peerConnection
+}
+
 func (pc *peerConnection) createRemotePeerBitfield() (*customdatatypes.FixedSizeBitfield, error) {
 	remotePeerBitfield, err := customdatatypes.NewFixedSizeBitfield(pc.pieceCount)
 	if err != nil {
@@ -184,10 +202,9 @@ func (pc *peerConnection) receiverController(stateUpdater chan<- StateUpdateType
 	for {
 		select {
 		case rawMessage := <-receiverOutput:
-			/* TODO: Perhaps I shouldn't be accepting all traffic, but some traffic needs to go through still
-			 if cd.amChoking {
-				continue
-			} */
+			pc.connDataRequests <- true // TODO: This channel and many others really should be buffered for performance.
+			connData := <-pc.connDataReplies
+
 			switch peerMessage := rawMessage.(type) {
 			case chokeMessage:
 				stateUpdater <- Choked
@@ -207,8 +224,14 @@ func (pc *peerConnection) receiverController(stateUpdater chan<- StateUpdateType
 				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
 				dataRateUpdate <- len(peerMessage.block)
 			case requestMessage:
+				if connData.amChoking {
+					break
+				}
 				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
 			case cancelMessage:
+				if connData.amChoking {
+					break
+				}
 				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
 			case bitfieldMessage:
 				peerBitfieldUpdate <- peerMessage.bitfield
@@ -289,89 +312,6 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 	}
 }
 
-/*
-	func (pc *peerConnection) connectionRoutine() {
-		// TODO: Maybe make the channels one way, but to do that every channel operation must have its separate function,
-		// and you need to stick to the convention. Not sure if that's better
-
-		receiverOutput := make(chan peerMessage)
-		toForwarder := make(chan peerMessage)
-
-		dataCounter := 0
-		downloadRates := make([]int, 100)
-
-		dataRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
-
-		cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
-		peerBitfield, err := pc.createRemotePeerBitfield()
-
-		if err != nil {
-			// TODO: Handle this more elegantly somehow. It's technically an impossible error, but we still don't want to crash.
-			panic(err)
-		}
-
-		go pc.forwarderRoutine(toForwarder)
-		go pc.receiverRoutine(receiverOutput)
-
-		for {
-			select {
-			case rawMessage := <-receiverOutput:
-				 TODO: Perhaps I shouldn't be accepting any traffic, but some traffic needs to go through still
-				 //if cd.amChoking {
-				//	continue
-				//}
-				switch peerMessage := rawMessage.(type) {
-				case chokeMessage:
-					cd.peerChoking = true
-				case unchokeMessage:
-					cd.peerChoking = false
-				case interestedMessage:
-					cd.peerInterested = true
-				case notInterestedMessage:
-					cd.peerInterested = false
-				case haveMessage:
-					peerBitfield.SetBit(peerMessage.pieceIndex)
-				case pieceMessage:
-					pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-					dataCounter += len(peerMessage.block)
-				case requestMessage:
-					pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-				case cancelMessage:
-					pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-				case bitfieldMessage:
-					// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
-					err := peerBitfield.ImportBitfield(peerMessage.bitfield)
-					if err != nil {
-						// TODO: DROP CONNECTION
-					}
-				}
-			case rawMessage := <-pc.input:
-				toForwarder <- rawMessage
-				switch rawMessage.(type) {
-				case chokeMessage:
-					cd.amChoking = true
-				case unchokeMessage:
-					cd.amChoking = false
-				case interestedMessage:
-					cd.amInterested = true
-				case notInterestedMessage:
-					cd.amInterested = false
-				}
-			case <-pc.connDataRequests:
-				pc.connDataReplies <- cd
-			case index := <-pc.pieceCheck:
-				pieceCheckResult, _ := peerBitfield.IsSet(index)
-				pc.pieceStatus <- pieceCheckResult
-			case <-pc.speedRequests:
-				pc.speedReplies <- pc.dataTransferSpeed
-			case <-dataRateTicker.C:
-				downloadRates = addDataPoint(downloadRates, dataCounter)
-				pc.dataTransferSpeed = calcConnectionSpeed(downloadRates)
-				dataCounter = 0
-			}
-		}
-	}
-*/
 func (pc *peerConnection) forwarderRoutine(msgInput <-chan peerMessage) {
 	keepAliveTicker := time.NewTicker(KEEP_ALIVE_TIME)
 
@@ -469,6 +409,18 @@ func (pc *peerConnection) forwarderRoutine(msgInput <-chan peerMessage) {
 					slog.String("peerIP", pc.otherPeer.ip),
 					slog.Int("PeerPort", int(pc.otherPeer.port)),
 				)
+			case bitfieldMessage:
+				bitfieldBytes := peerMessage.bitfield
+
+				pc.sendBitfield(bitfieldBytes)
+
+				slog.LogAttrs(
+					context.Background(),
+					slog.LevelInfo,
+					"Sent bitfield",
+					slog.String("peerIP", pc.otherPeer.ip),
+					slog.Int("PeerPort", int(pc.otherPeer.port)),
+				)
 			}
 		case <-keepAliveTicker.C:
 			pc.sendKeepAlive()
@@ -500,6 +452,7 @@ func (pc *peerConnection) receiverRoutine(msgOutput chan<- peerMessage) {
 				slog.String("peerIP", pc.otherPeer.ip),
 				slog.Int("PeerPort", int(pc.otherPeer.port)),
 			)
+			pc.connection.Close()
 			// TODO: Just a temporary patch
 			time.Sleep(10000 * time.Millisecond)
 		}
@@ -665,18 +618,10 @@ func (pc *peerConnection) receiveMessage(buffcon *bufio.Reader) (peerMessage, er
 	}
 }
 
-func (pc *peerConnection) performHandshake(infohash, peerID customdatatypes.CustomHash) error {
-	slog.LogAttrs(
-		context.Background(),
-		slog.LevelInfo,
-		"Attempting handshake",
-		slog.String("peerIP", pc.otherPeer.ip),
-		slog.Int("PeerPort", int(pc.otherPeer.port)),
-	)
+func (pc *peerConnection) sendHandshakeMsg(infohash, peerID customdatatypes.CustomHash) error {
 	pstr := "BitTorrent protocol"
 	var handshakeBuffer bytes.Buffer
 
-	responseBuffer := make([]byte, 68) // TODO: I wonder if the pstr can be anything other than what the 1.0 version says it is...
 	reservedBytes := make([]byte, 8)
 	handshakeBuffer.WriteByte(byte(19))
 	handshakeBuffer.WriteString(pstr)
@@ -690,8 +635,39 @@ func (pc *peerConnection) performHandshake(infohash, peerID customdatatypes.Cust
 	if writeErr != nil {
 		return &PeerConnectionError{Message: "Failed to send handshake", InvolvedPeer: pc.otherPeer}
 	}
+	return nil
+}
 
+func (pc *peerConnection) receivePeerID() (customdatatypes.CustomHash, error) {
+	// TODO: This could just be a generic function for receiving X bytes, maybe?
+	peerIDBuff := make([]byte, 20)
+	_, readErr := pc.connection.Read(peerIDBuff)
+	if readErr != nil {
+		return customdatatypes.CustomHash{}, &PeerConnectionError{Message: "Didn't receive peerID in incoming handshake", InvolvedPeer: pc.otherPeer}
+	}
+
+	peerID := customdatatypes.CustomHash{HashBytes: peerIDBuff}
+	return peerID, nil
+}
+
+func (pc *peerConnection) performHandshake(infohash, peerID customdatatypes.CustomHash) error {
+	slog.LogAttrs(
+		context.Background(),
+		slog.LevelInfo,
+		"Attempting handshake",
+		slog.String("peerIP", pc.otherPeer.ip),
+		slog.Int("PeerPort", int(pc.otherPeer.port)),
+	)
+	responseBuffer := make([]byte, 68) // TODO: I wonder if the pstr can be anything other than what the 1.0 version says it is...
+
+	writeErr := pc.sendHandshakeMsg(infohash, peerID)
+	if writeErr != nil {
+		return writeErr
+	}
+	// TODO: This is a hotfix because the client keeps trying to connect to itself. It's probably not a good way to handle timeouts.
+	pc.connection.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, readErr := pc.connection.Read(responseBuffer)
+	pc.connection.SetReadDeadline(time.Time{})
 
 	if readErr != nil {
 		return &PeerConnectionError{Message: "Didn't receive handshake response", InvolvedPeer: pc.otherPeer}
@@ -953,9 +929,7 @@ func (pc *peerConnection) sendCancel(index, begin, length int) error {
 	return nil
 }
 
-func (pc *peerConnection) sendBitfield(clientPieceIndex customdatatypes.FixedSizeBitfield) error {
-	bitfieldBytes := clientPieceIndex.ExposeBitfield()
-
+func (pc *peerConnection) sendBitfield(bitfieldBytes []byte) error {
 	var bitfieldBuffer bytes.Buffer
 
 	msgLength := make([]byte, 4)

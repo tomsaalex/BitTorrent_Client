@@ -149,7 +149,7 @@ func (tc *trackerConnection) announceRequest(td TorrentData, tStats TorrentStats
 	requestParameters.Add("info_hash", string(td.Infohash.HashBytes))
 	requestParameters.Add("peer_id", string(peerID.HashBytes))
 	//requestParameters.Add("ip", "tomsa.go.ro")                                  // Replace this with something proper
-	requestParameters.Add("port", "6881")                                           // Replace this with the proper port
+	requestParameters.Add("port", "63999")                                          // Replace this with the proper port
 	requestParameters.Add("uploaded", strconv.Itoa(tStats.uploadedBytes))           //
 	requestParameters.Add("downloaded", strconv.Itoa(tStats.downloadedBytes))       //
 	requestParameters.Add("left", strconv.Itoa(torrentSize-tStats.downloadedBytes)) //
@@ -170,7 +170,7 @@ func (tc *trackerConnection) announceRequest(td TorrentData, tStats TorrentStats
 	}
 
 	requestURL += requestParameters.Encode()
-
+	fmt.Println(requestURL)
 	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
 	if err != nil {
 		errMessage := fmt.Sprintf("TrackerConnection: could not create announce request: %s\n", err)

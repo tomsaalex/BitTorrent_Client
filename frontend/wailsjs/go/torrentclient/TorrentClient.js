@@ -9,3 +9,7 @@ export function AddTorrent(arg1) {
 export function GenerateAggregateReport() {
   return window['go']['torrentclient']['TorrentClient']['GenerateAggregateReport']();
 }
+
+export function LaunchRoutines() {
+  return window['go']['torrentclient']['TorrentClient']['LaunchRoutines']();
+}
