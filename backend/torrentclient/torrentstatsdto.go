@@ -12,8 +12,10 @@ type ConnectionDataStatusDTO struct {
 }
 
 type TorrentStatsDTO struct {
-	UploadedBytes   int `json:"uploadedBytes"`
-	DownloadedBytes int `json:"downloadedBytes"`
+	UploadedBytes        int          `json:"uploadedBytes"`
+	DownloadedBytes      int          `json:"downloadedBytes"`
+	State                torrentState `json:"torrentState"`
+	RecheckedPiecesCount int          `json:"recheckedPiecesCount"`
 
 	ConnectionDataStatuses map[string]ConnectionDataStatusDTO `json:"connectionDataStatuses"`
 
@@ -41,11 +43,33 @@ func connectionDataStatusToDTO(cds *connectionDataStatus) ConnectionDataStatusDT
 	return newDTO
 }
 
-func torrentStatsToDTO(tStats *TorrentStats) TorrentStatsDTO {
+func torrentStatsSnapshot(tStats *TorrentStats) TorrentStatsDTO {
+	// TODO: Not technically a perfect snapshot since the pieces bitfield can still update during this, but that's not super important.
+	// TODO: Should this be moved to the torrentStats?
 	newDTO := TorrentStatsDTO{}
+
+	tStats.requestedPiecesMu.Lock()
+	defer tStats.requestedPiecesMu.Unlock()
+
+	tStats.connectionDataStatusesMu.Lock()
+	defer tStats.connectionDataStatusesMu.Unlock()
+
+	tStats.uploadedBytesMu.Lock()
+	defer tStats.uploadedBytesMu.Unlock()
+
+	tStats.downloadedBytesMu.Lock()
+	defer tStats.downloadedBytesMu.Unlock()
+
+	tStats.stateMu.Lock()
+	defer tStats.stateMu.Unlock()
+
+	tStats.recheckedPiecesCountMu.Lock()
+	defer tStats.recheckedPiecesCountMu.Unlock()
 
 	newDTO.UploadedBytes = tStats.uploadedBytes
 	newDTO.DownloadedBytes = tStats.downloadedBytes
+	newDTO.RecheckedPiecesCount = tStats.recheckedPiecesCount
+	newDTO.State = tStats.state
 
 	newDTO.NumberOfPiecesOnDisk = tStats.piecesStoredToDisk.BitsSetCount()
 	newDTO.PiecesStoredToDisk = tStats.piecesStoredToDisk.ExposeBitfield()

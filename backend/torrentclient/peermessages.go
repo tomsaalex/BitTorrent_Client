@@ -14,6 +14,8 @@ const (
 	PIECE_MESSAGE
 	CANCEL_MESSAGE
 	KEEP_ALIVE_MESSAGE
+
+	CONNECTION_DROP_MESSAGE // Not part of protocol specification, just added to make it easier to drop connections.
 )
 
 type peerMessage interface {
@@ -94,4 +96,11 @@ type cancelMessage struct {
 
 func (cm cancelMessage) Type() peerMessageType {
 	return CANCEL_MESSAGE
+}
+
+type connectionDropMessage struct {
+}
+
+func (cdm connectionDropMessage) Type() peerMessageType {
+	return CONNECTION_DROP_MESSAGE
 }

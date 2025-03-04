@@ -2,6 +2,7 @@ package torrentclient
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -131,7 +132,7 @@ func (tc *trackerConnection) parseTrackerResponse(response string) (trackerRespo
 	return processedResponse, nil
 }
 
-func (tc *trackerConnection) announceRequest(td TorrentData, tStats TorrentStats, peerID customdatatypes.CustomHash, te TrackerEvent) (trackerResponse, error) {
+func (tc *trackerConnection) announceRequest(ctx context.Context, td TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, te TrackerEvent) (trackerResponse, error) {
 	requestURL := fmt.Sprintf("%s?", td.Announce)
 
 	requestParameters := url.Values{}
@@ -171,7 +172,8 @@ func (tc *trackerConnection) announceRequest(td TorrentData, tStats TorrentStats
 
 	requestURL += requestParameters.Encode()
 	fmt.Println(requestURL)
-	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		errMessage := fmt.Sprintf("TrackerConnection: could not create announce request: %s\n", err)
 		panic(TrackerConnectionError{Message: errMessage})

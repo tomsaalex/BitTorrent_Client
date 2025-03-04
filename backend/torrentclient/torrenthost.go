@@ -2,6 +2,7 @@ package torrentclient
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -19,11 +20,8 @@ const (
 
 type torrentHost struct {
 	torrentData  TorrentData
-	torrentStats TorrentStats
+	torrentStats *TorrentStats
 	diskManager  DiskManager
-
-	statusUpdateRequest chan<- bool
-	statusUpdateReply   <-chan TorrentStatsDTO
 
 	torrentUpdateRequest chan bool
 	torrentUpdateReply   chan TorrentDTO
@@ -33,13 +31,13 @@ type torrentHost struct {
 	peerConnectionManager PeerConnectionManager
 }
 
-func (th *torrentHost) trackerManager(eventsChannel <-chan TrackerEvent, peerListChan chan<- []peer) {
+func (th *torrentHost) trackerManager(ctx context.Context, eventsChannel <-chan TrackerEvent, peerListChan chan<- []peer) {
 	var triggerChannel <-chan time.Time
 
 	trackerInterval := -1
 
 	handleAnnounce := func(eventToExecute TrackerEvent) {
-		trackerResponse, err := th.trackConnection.announceRequest(th.torrentData, th.torrentStats, th.peerID, eventToExecute)
+		trackerResponse, err := th.trackConnection.announceRequest(ctx, th.torrentData, th.torrentStats, th.peerID, eventToExecute)
 		if err != nil {
 			panic(err) // TODO replace with proper error handling
 		}
@@ -57,17 +55,50 @@ func (th *torrentHost) trackerManager(eventsChannel <-chan TrackerEvent, peerLis
 			handleAnnounce(eventToExecute)
 		case <-triggerChannel:
 			handleAnnounce(T_NIL)
+		case <-ctx.Done():
+			fmt.Println("Exitted out of trackerManager")
+			return
 		}
 	}
 }
 
-func (th *torrentHost) torrentManager() {
+func (th *torrentHost) recheckTorrent() error {
+	res := make(chan pieceValidationResult)
+	prevTorrentState := th.torrentStats.getState()
+	defer func() {
+		th.torrentStats.changeState(prevTorrentState)
+	}()
+
+	th.torrentStats.changeState(Rechecking)
+
+	validPieces, err := customdatatypes.NewFixedSizeBitfield(len(th.torrentData.PieceHashes))
+	if err != nil {
+		return err
+	}
+
+	go th.diskManager.checkTorrentIntegrity(th.torrentData, res)
+
+	for validationResult := range res {
+		if validationResult.valid {
+			validPieces.SetBit(validationResult.pieceIndex)
+		}
+		th.torrentStats.incrementRecheckedPiecesCount()
+	}
+
+	th.torrentStats.UpdateRecheckedPieces(validPieces)
+	return nil
+}
+
+func (th *torrentHost) torrentManager(ctx context.Context) {
 	slog.LogAttrs(
 		context.Background(),
 		slog.LevelInfo,
 		"Started",
 		slog.String("method", "torrentManager"),
 	)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	centralPeerList := make([]peer, 0)
 
@@ -77,7 +108,7 @@ func (th *torrentHost) torrentManager() {
 	peersToConnectChan := make(chan []peer)
 	peerRequestChan := make(chan bool)
 
-	bitfieldOutputChan := make(chan customdatatypes.FixedSizeBitfield)
+	bitfieldOutputChan := make(chan *customdatatypes.FixedSizeBitfield)
 	bitfieldRequestChan := make(chan bool)
 
 	pieceToWriter := make(chan piece)
@@ -87,10 +118,11 @@ func (th *torrentHost) torrentManager() {
 
 	blockRequestsInput := make(chan BlockRetrievalRequest)
 
-	go th.trackerManager(trackerEventsChannel, peerListChannel)
-	go th.torrentStats.StatsKeeper()
-	go th.peerConnectionManager.connectionManager(th.torrentData, &th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, havePieceAnnouncer, blockRequestsInput)
-	go th.diskManager.fileWriter(pieceToWriter, newStoredPieceChan, blockRequestsInput, &th.torrentData)
+	//th.recheckTorrent()
+
+	go th.trackerManager(ctx, trackerEventsChannel, peerListChannel)
+	go th.peerConnectionManager.connectionManager(ctx, th.torrentData, th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, havePieceAnnouncer, blockRequestsInput)
+	go th.diskManager.fileWriter(ctx, pieceToWriter, newStoredPieceChan, blockRequestsInput, &th.torrentData)
 	trackerEventsChannel <- T_STARTED
 
 	for {
@@ -131,11 +163,10 @@ func (th *torrentHost) torrentManager() {
 				slog.String("method", "torrentManager"),
 			)
 
-			th.torrentStats.storedPiecesAnnouncer <- pieceIndex
+			th.torrentStats.piecesStoredToDisk.SetBit(pieceIndex)
 			havePieceAnnouncer <- pieceIndex
 
-			th.torrentStats.haveAllPiecesRequest <- true
-			haveAllPieces := <-th.torrentStats.haveAllPiecesReply
+			haveAllPieces := th.torrentStats.piecesStoredToDisk.IsFull()
 			if haveAllPieces {
 				trackerEventsChannel <- T_COMPLETED
 				slog.LogAttrs(
@@ -146,23 +177,22 @@ func (th *torrentHost) torrentManager() {
 				)
 			}
 		case <-th.torrentUpdateRequest:
-			th.statusUpdateRequest <- true
-			torrentStatsDTO := <-th.statusUpdateReply
+			torrentStatsDTO := torrentStatsSnapshot(th.torrentStats)
 			torrentDTO := TorrentDTO{}
 			torrentDTO.TorrentData = torrentDataToDTO(&th.torrentData)
 			torrentDTO.TorrentStats = torrentStatsDTO
 
 			th.torrentUpdateReply <- torrentDTO
+		case <-ctx.Done():
+			return
 		}
 	}
 }
 
-func NewTorrentHost(torrentData TorrentData, torrentStats TorrentStats, peerID customdatatypes.CustomHash, pcm PeerConnectionManager) *torrentHost {
-	statsReqChan, statsReplyChan := torrentStats.statusUpdatesChannels()
-
+func NewTorrentHost(torrentData TorrentData, torrentStats *TorrentStats, peerID customdatatypes.CustomHash, pcm PeerConnectionManager) *torrentHost {
 	torrReqChan := make(chan bool)
 	torrReplyChan := make(chan TorrentDTO)
 
-	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID, peerConnectionManager: pcm, statusUpdateRequest: statsReqChan, statusUpdateReply: statsReplyChan, torrentUpdateRequest: torrReqChan, torrentUpdateReply: torrReplyChan}
+	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID, peerConnectionManager: pcm, torrentUpdateRequest: torrReqChan, torrentUpdateReply: torrReplyChan}
 	return newTorrent
 }

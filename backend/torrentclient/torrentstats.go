@@ -1,7 +1,17 @@
 package torrentclient
 
 import (
+	"sync"
+
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
+)
+
+type torrentState int
+
+const (
+	Running torrentState = iota
+	Paused
+	Rechecking
 )
 
 type connectionDataStatus struct {
@@ -12,7 +22,7 @@ type connectionDataStatus struct {
 	uploadSpeed   int
 
 	peer         peer
-	peerBitfield customdatatypes.FixedSizeBitfield
+	peerBitfield *customdatatypes.FixedSizeBitfield
 }
 
 func newConnectionDataStatus(p peer, bitfieldSize int) (connectionDataStatus, error) {
@@ -22,138 +32,121 @@ func newConnectionDataStatus(p peer, bitfieldSize int) (connectionDataStatus, er
 		return connectionDataStatus{}, err
 	}
 
-	return connectionDataStatus{peer: p, peerBitfield: *bitfield}, nil
+	return connectionDataStatus{peer: p, peerBitfield: bitfield}, nil
 }
 
 type TorrentStats struct {
 	torrentInfohash customdatatypes.CustomHash
 
+	state   torrentState
+	stateMu sync.Mutex
+
+	recheckedPiecesCount   int
+	recheckedPiecesCountMu sync.Mutex
+
 	uploadedBytes   int
-	downloadedBytes int
+	uploadedBytesMu sync.Mutex
 
-	pieceIndex customdatatypes.FixedSizeBitfield
+	downloadedBytes   int
+	downloadedBytesMu sync.Mutex
 
-	connectionDataStatuses map[string]connectionDataStatus
+	pieceIndex *customdatatypes.FixedSizeBitfield
 
-	piecesStoredToDisk customdatatypes.FixedSizeBitfield
+	connectionDataStatuses   map[string]connectionDataStatus
+	connectionDataStatusesMu sync.Mutex
+
+	piecesStoredToDisk *customdatatypes.FixedSizeBitfield
 	requestedBlocks    []BlockRequest
-	requestedPieces    []int
+	requestedBlocksMu  sync.Mutex
+
+	requestedPieces   []int
+	requestedPiecesMu sync.Mutex
+
 	unselectedPieces   []int
-
-	obtainedPiecesChan    chan int
-	requestedPiecesChan   chan int
-	pieceIndexFullRequest chan bool
-	pieceIndexFullReply   chan bool
-
-	obtainedBlocksChan  chan BlockRequest
-	requestedBlocksChan chan BlockRequest
-
-	cancelRequestsToPeerChan chan peerConnection
-	requestedBlocksRequest   chan bool
-	requestedBlocksReply     chan []BlockRequest
-
-	unselectedPiecesRequest chan bool
-	unselectedPiecesReply   chan []int
-
-	requestedPiecesRequest chan bool
-	requestedPiecesReply   chan []int
-
-	storedPiecesAnnouncer chan int
-
-	haveAllPiecesRequest chan bool
-	haveAllPiecesReply   chan bool
-
-	statusUpdatesRequest chan bool
-	statusUpdatesReply   chan TorrentStatsDTO
-
-	dataReportsChan   chan dataExchangeReport
-	speedReportsChan  chan speedExchangeReport
-	newPeerPiecesChan chan peerPieceReport
-
-	bitfieldRequest chan bool
-	bitfieldReply   chan customdatatypes.FixedSizeBitfield
+	unselectedPiecesMu sync.Mutex
 }
 
-func (ts *TorrentStats) StatsKeeper() {
-	for {
-		select {
-		case pieceIndex := <-ts.obtainedPiecesChan:
-			ts.markPieceAsObtained(pieceIndex)
-		case pieceIndex := <-ts.requestedPiecesChan:
-			ts.markPieceAsRequested(pieceIndex)
-		case block := <-ts.obtainedBlocksChan:
-			ts.markBlockAsObtained(block)
-		case blockReq := <-ts.requestedBlocksChan:
-			ts.markBlockAsRequested(blockReq)
-		case peerConn := <-ts.cancelRequestsToPeerChan:
-			ts.cancelRequestsToPeer(peerConn)
-		case <-ts.pieceIndexFullRequest:
-			ts.pieceIndexFullReply <- ts.pieceIndex.IsFull()
-		case <-ts.unselectedPiecesRequest:
-			// Sending the slice should be fine, since we're not changing the elements of the slice in another thread concurrently,
-			// but if I ever want that, this needs to make a copy.
-			ts.unselectedPiecesReply <- ts.unselectedPieces
-		case <-ts.requestedPiecesRequest:
-			// Sending the slice should be fine, since we're not changing the elements of the slice in another thread concurrently,
-			// but if I ever want that, this needs to make a copy.
-			ts.requestedPiecesReply <- ts.requestedPieces
-		case <-ts.requestedBlocksRequest:
-			ts.requestedBlocksReply <- ts.requestedBlocks
-		case dr := <-ts.dataReportsChan:
-			// TODO: Consider making this channel (ts.dataReportsChan) buffered for performance reasons
-			connectionStats, found := ts.connectionDataStatuses[dr.remotePeer.fullAddress()]
+func (ts *TorrentStats) unselectedPiecesCopy() []int {
+	// TODO: Consider replacing append with copy (must initialize dest with the proper length) for performance.
+	ts.unselectedPiecesMu.Lock()
+	defer ts.unselectedPiecesMu.Unlock()
+	return append([]int{}, ts.unselectedPieces...)
+}
 
-			if !found {
-				connectionStats, _ = newConnectionDataStatus(dr.remotePeer, ts.piecesStoredToDisk.BitCount())
-			}
+func (ts *TorrentStats) requestedPiecesCopy() []int {
+	// TODO: Consider replacing append with copy (must initialize dest with the proper length) for performance.
+	ts.requestedPiecesMu.Lock()
+	defer ts.requestedPiecesMu.Unlock()
+	return append([]int{}, ts.requestedPieces...)
+}
 
-			if dr.trafType == IncomingTraffic {
-				connectionStats.downloadedData += dr.exchangedDataCount
-				ts.downloadedBytes += dr.exchangedDataCount
-			} else {
-				connectionStats.uploadedData += dr.exchangedDataCount
-				ts.uploadedBytes += dr.exchangedDataCount
-			}
+func (ts *TorrentStats) requestedBlocksCopy() []BlockRequest {
+	// TODO: Consider replacing append with copy (must initialize dest with the proper length) for performance.
+	ts.requestedBlocksMu.Lock()
+	defer ts.requestedBlocksMu.Unlock()
+	return append([]BlockRequest{}, ts.requestedBlocks...)
+}
 
-			ts.connectionDataStatuses[dr.remotePeer.fullAddress()] = connectionStats
-		case sr := <-ts.speedReportsChan:
-			// TODO: Consider making this channel (ts.speedReportsChan) buffered for performance reasons
-			connectionStats, found := ts.connectionDataStatuses[sr.remotePeer.fullAddress()]
+func (ts *TorrentStats) updateRemotePeerPieces(report peerPieceReport) {
+	ts.connectionDataStatusesMu.Lock()
+	defer ts.connectionDataStatusesMu.Unlock()
 
-			if !found {
-				connectionStats, _ = newConnectionDataStatus(sr.remotePeer, ts.piecesStoredToDisk.BitCount())
-			}
-			if sr.trafType == IncomingTraffic {
-				connectionStats.downloadSpeed = sr.connSpeed
-			} else {
-				connectionStats.uploadSpeed = sr.connSpeed
-			}
+	connectionStats, found := ts.connectionDataStatuses[report.remotePeer.fullAddress()]
 
-			ts.connectionDataStatuses[sr.remotePeer.fullAddress()] = connectionStats
-		case pr := <-ts.newPeerPiecesChan:
-			// TODO: Consider making this channel (ts.newPeerPiecesChan) buffered for performance reasons
-			connectionStats, found := ts.connectionDataStatuses[pr.remotePeer.fullAddress()]
-
-			if !found {
-				connectionStats, _ = newConnectionDataStatus(pr.remotePeer, ts.piecesStoredToDisk.BitCount())
-			}
-
-			connectionStats.peerBitfield.SetBit(pr.reportedPieceIndex)
-
-		case <-ts.haveAllPiecesRequest:
-			ts.haveAllPiecesReply <- ts.piecesStoredToDisk.IsFull()
-		case <-ts.statusUpdatesRequest:
-			ts.statusUpdatesReply <- torrentStatsToDTO(ts)
-		case pieceIndex := <-ts.storedPiecesAnnouncer:
-			ts.piecesStoredToDisk.SetBit(pieceIndex)
-		case <-ts.bitfieldRequest:
-			ts.bitfieldReply <- ts.piecesStoredToDisk
-		}
+	if !found {
+		connectionStats, _ = newConnectionDataStatus(report.remotePeer, ts.piecesStoredToDisk.BitCount())
 	}
+
+	connectionStats.peerBitfield.SetBit(report.reportedPieceIndex)
 }
 
-func (ts *TorrentStats) markPieceAsObtained(pIndex int) {
-	ts.pieceIndex.SetBit(pIndex)
+func (ts *TorrentStats) addSpeedReport(report speedExchangeReport) {
+	ts.connectionDataStatusesMu.Lock()
+	defer ts.connectionDataStatusesMu.Unlock()
+	connectionStats, found := ts.connectionDataStatuses[report.remotePeer.fullAddress()]
+
+	if !found {
+		connectionStats, _ = newConnectionDataStatus(report.remotePeer, ts.piecesStoredToDisk.BitCount())
+	}
+	if report.trafType == IncomingTraffic {
+		connectionStats.downloadSpeed = report.connSpeed
+	} else {
+		connectionStats.uploadSpeed = report.connSpeed
+	}
+
+	ts.connectionDataStatuses[report.remotePeer.fullAddress()] = connectionStats
+}
+
+func (ts *TorrentStats) addDataReport(report dataExchangeReport) {
+	ts.connectionDataStatusesMu.Lock()
+	defer ts.connectionDataStatusesMu.Unlock()
+
+	connectionStats, found := ts.connectionDataStatuses[report.remotePeer.fullAddress()]
+
+	if !found {
+		connectionStats, _ = newConnectionDataStatus(report.remotePeer, ts.piecesStoredToDisk.BitCount())
+	}
+
+	if report.trafType == IncomingTraffic {
+		connectionStats.downloadedData += report.exchangedDataCount
+
+		ts.downloadedBytesMu.Lock()
+		defer ts.downloadedBytesMu.Unlock()
+		ts.downloadedBytes += report.exchangedDataCount
+	} else {
+		connectionStats.uploadedData += report.exchangedDataCount
+
+		ts.uploadedBytesMu.Lock()
+		defer ts.uploadedBytesMu.Unlock()
+		ts.uploadedBytes += report.exchangedDataCount
+	}
+
+	ts.connectionDataStatuses[report.remotePeer.fullAddress()] = connectionStats
+}
+
+func (ts *TorrentStats) removePieceFromRequested(pIndex int) {
+	ts.requestedPiecesMu.Lock()
+	defer ts.requestedPiecesMu.Unlock()
 
 	for i := len(ts.requestedPieces) - 1; i >= 0; i-- {
 		if ts.requestedPieces[i] == pIndex {
@@ -162,9 +155,18 @@ func (ts *TorrentStats) markPieceAsObtained(pIndex int) {
 	}
 }
 
-func (ts *TorrentStats) markPieceAsRequested(pIndex int) {
-	ts.requestedPieces = append(ts.requestedPieces, pIndex)
+func (ts *TorrentStats) markPieceAsObtained(pIndex int) {
+	ts.pieceIndex.SetBit(pIndex)
+	ts.removePieceFromRequested(pIndex)
+}
 
+func (ts *TorrentStats) markPieceAsRequested(pIndex int) {
+	ts.requestedPiecesMu.Lock()
+	ts.requestedPieces = append(ts.requestedPieces, pIndex)
+	ts.requestedPiecesMu.Unlock()
+
+	ts.unselectedPiecesMu.Lock()
+	defer ts.unselectedPiecesMu.Unlock()
 	posToRem := -1
 	for i, unselectedPiece := range ts.unselectedPieces {
 		if unselectedPiece == pIndex {
@@ -176,10 +178,15 @@ func (ts *TorrentStats) markPieceAsRequested(pIndex int) {
 }
 
 func (ts *TorrentStats) markBlockAsRequested(block BlockRequest) {
+	ts.requestedBlocksMu.Lock()
+	defer ts.requestedBlocksMu.Unlock()
+
 	ts.requestedBlocks = append(ts.requestedBlocks, block)
 }
 
 func (ts *TorrentStats) markBlockAsObtained(block BlockRequest) {
+	ts.requestedBlocksMu.Lock()
+	defer ts.requestedBlocksMu.Unlock()
 	posToRem := -1
 	for i, blockReq := range ts.requestedBlocks {
 		if blockReq.pieceIndex == block.pieceIndex && blockReq.blockStart == block.blockStart {
@@ -187,11 +194,13 @@ func (ts *TorrentStats) markBlockAsObtained(block BlockRequest) {
 			break
 		}
 	}
-
+	// TODO: Ideally there shouldn't be any situation where posToRem is negative or out of bounds, but maybe some check or assertion would be good
 	ts.requestedBlocks = append(ts.requestedBlocks[:posToRem], ts.requestedBlocks[posToRem+1:]...)
 }
 
-func (ts *TorrentStats) cancelRequestsToPeer(peerConn peerConnection) {
+func (ts *TorrentStats) cancelRequestsToPeer(peerConn *peerConnection) {
+	ts.requestedBlocksMu.Lock()
+	defer ts.requestedBlocksMu.Unlock()
 	validRequests := make([]BlockRequest, 0)
 	for _, req := range ts.requestedBlocks {
 		if req.remotePeer.equal(&peerConn.otherPeer) {
@@ -207,20 +216,65 @@ func (ts *TorrentStats) cancelRequestsToPeer(peerConn peerConnection) {
 	ts.requestedBlocks = validRequests
 }
 
-func (ts *TorrentStats) statusUpdatesChannels() (chan<- bool, <-chan TorrentStatsDTO) {
-	return ts.statusUpdatesRequest, ts.statusUpdatesReply
+func (ts *TorrentStats) getState() torrentState {
+	ts.stateMu.Lock()
+	defer ts.stateMu.Unlock()
+
+	return ts.state
 }
 
-func NewTorrentStats(infohash customdatatypes.CustomHash, pieceCount int) (TorrentStats, error) {
+func (ts *TorrentStats) changeState(newState torrentState) {
+	ts.stateMu.Lock()
+	defer ts.stateMu.Unlock()
+
+	switch newState {
+	case Rechecking:
+		ts.recheckedPiecesCountMu.Lock()
+		defer ts.recheckedPiecesCountMu.Unlock()
+
+		ts.recheckedPiecesCount = 0
+		ts.state = newState
+	case Running:
+		ts.state = newState
+	}
+}
+
+func (ts *TorrentStats) incrementRecheckedPiecesCount() {
+	ts.recheckedPiecesCountMu.Lock()
+	defer ts.recheckedPiecesCountMu.Unlock()
+
+	ts.recheckedPiecesCount++
+}
+
+func (ts *TorrentStats) UpdateRecheckedPieces(pieceIndex *customdatatypes.FixedSizeBitfield) error {
+	err := ts.pieceIndex.ImportBitfield(pieceIndex.ExposeBitfield())
+	if err != nil {
+		return err
+	}
+
+	err = ts.piecesStoredToDisk.ImportBitfield(pieceIndex.ExposeBitfield())
+	if err != nil {
+		return err
+	}
+
+	ts.unselectedPiecesMu.Lock()
+	defer ts.unselectedPiecesMu.Unlock()
+
+	ts.unselectedPieces = pieceIndex.GetUnsetBitsIndices()
+	return nil
+}
+
+func NewTorrentStats(infohash customdatatypes.CustomHash, pieceCount int) (*TorrentStats, error) {
 	torrentStats := TorrentStats{}
 
+	torrentStats.state = Running
 	torrentStats.torrentInfohash = infohash
 
 	bitfield, err := customdatatypes.NewFixedSizeBitfield(pieceCount)
 	if err != nil {
-		return TorrentStats{}, err
+		return nil, err
 	}
-	torrentStats.pieceIndex = *bitfield
+	torrentStats.pieceIndex = bitfield
 
 	torrentStats.unselectedPieces = bitfield.GetUnsetBitsIndices()
 	torrentStats.requestedPieces = make([]int, 0)
@@ -228,47 +282,12 @@ func NewTorrentStats(infohash customdatatypes.CustomHash, pieceCount int) (Torre
 	piecesStoredToDisk, err := customdatatypes.NewFixedSizeBitfield(pieceCount)
 
 	if err != nil {
-		return TorrentStats{}, err
+		return nil, err
 	}
 
-	torrentStats.piecesStoredToDisk = *piecesStoredToDisk
+	torrentStats.piecesStoredToDisk = piecesStoredToDisk
 
 	torrentStats.connectionDataStatuses = make(map[string]connectionDataStatus)
 
-	torrentStats.obtainedPiecesChan = make(chan int)
-	torrentStats.requestedPiecesChan = make(chan int)
-
-	torrentStats.pieceIndexFullRequest = make(chan bool)
-	torrentStats.pieceIndexFullReply = make(chan bool)
-
-	torrentStats.obtainedBlocksChan = make(chan BlockRequest)
-	torrentStats.requestedBlocksChan = make(chan BlockRequest)
-
-	torrentStats.requestedBlocksRequest = make(chan bool)
-	torrentStats.requestedBlocksReply = make(chan []BlockRequest)
-
-	torrentStats.cancelRequestsToPeerChan = make(chan peerConnection)
-
-	torrentStats.unselectedPiecesRequest = make(chan bool)
-	torrentStats.unselectedPiecesReply = make(chan []int)
-
-	torrentStats.requestedPiecesRequest = make(chan bool)
-	torrentStats.requestedPiecesReply = make(chan []int)
-
-	torrentStats.storedPiecesAnnouncer = make(chan int)
-
-	torrentStats.haveAllPiecesRequest = make(chan bool)
-	torrentStats.haveAllPiecesReply = make(chan bool)
-
-	torrentStats.dataReportsChan = make(chan dataExchangeReport)
-	torrentStats.speedReportsChan = make(chan speedExchangeReport)
-	torrentStats.newPeerPiecesChan = make(chan peerPieceReport)
-
-	torrentStats.statusUpdatesRequest = make(chan bool, 1)
-	torrentStats.statusUpdatesReply = make(chan TorrentStatsDTO, 1)
-
-	torrentStats.bitfieldRequest = make(chan bool)
-	torrentStats.bitfieldReply = make(chan customdatatypes.FixedSizeBitfield)
-
-	return torrentStats, nil
+	return &torrentStats, nil
 }

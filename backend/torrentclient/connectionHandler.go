@@ -66,7 +66,7 @@ func handleIncomingHandshake(conn net.Conn, servedTorrentRequest chan<- []byte, 
 	return nil
 }
 
-func handleIncomingConnections(servedTorrentRequest chan []byte, servedTorrentReply chan (chan<- connBootstrapInfo)) {
+func handleIncomingConnections(ctx context.Context, servedTorrentRequest chan []byte, servedTorrentReply chan (chan<- connBootstrapInfo)) {
 	const port = 63999 // TODO: Either let the user set one or at least first iterate through the usual ones. Sync with trackerManager.
 
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(port)) // Ensure this matches your announce port
@@ -81,6 +81,7 @@ func handleIncomingConnections(servedTorrentRequest chan []byte, servedTorrentRe
 		slog.Int("port", port),
 	)
 	for {
+		// TODO: Maybe it would be nicer to have a graceful way of quitting out of accept, but there doesn't seem to be one.
 		conn, err := ln.Accept()
 		if err != nil {
 			// TODO: Handle this error better

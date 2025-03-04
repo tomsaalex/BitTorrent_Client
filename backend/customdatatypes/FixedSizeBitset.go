@@ -3,14 +3,19 @@ package customdatatypes
 import (
 	"fmt"
 	"math/bits"
+	"sync"
 
 	generalerrors "github.com/tomsaalex/BitTorrent_Client/backend/GeneralErrors"
 )
 
 type FixedSizeBitfield struct {
-	internalField []byte
-	bitCount      int
-	bitsSet       int
+	internalField   []byte
+	internalFieldMu sync.Mutex
+
+	bitCount int
+
+	bitsSet   int
+	bitsSetMu sync.Mutex
 }
 
 func (bf *FixedSizeBitfield) BitCount() int {
@@ -24,10 +29,15 @@ func (bf *FixedSizeBitfield) SetBit(bitIndex int) error {
 	byteNum := bitIndex / 8
 	bitToUpdate := bitIndex % 8
 
+	bf.internalFieldMu.Lock()
+	defer bf.internalFieldMu.Unlock()
+
 	oldByte := bf.internalField[byteNum]
 	bf.internalField[byteNum] |= (1 << (7 - bitToUpdate))
 
 	if oldByte != bf.internalField[byteNum] {
+		bf.bitsSetMu.Lock()
+		defer bf.bitsSetMu.Unlock()
 		bf.bitsSet++
 	}
 
@@ -41,10 +51,15 @@ func (bf *FixedSizeBitfield) ClearBit(bitIndex int) error {
 	byteNum := bitIndex / 8
 	bitToUpdate := bitIndex % 8
 
+	bf.internalFieldMu.Lock()
+	defer bf.internalFieldMu.Unlock()
+
 	oldByte := bf.internalField[byteNum]
 	bf.internalField[byteNum] &^= (1 << (7 - bitToUpdate))
 
 	if oldByte != bf.internalField[byteNum] {
+		bf.bitsSetMu.Lock()
+		defer bf.bitsSetMu.Unlock()
 		bf.bitsSet--
 	}
 
@@ -59,14 +74,21 @@ func (bf *FixedSizeBitfield) IsSet(bitIndex int) (bool, error) {
 	byteNum := bitIndex / 8
 	bitToQuery := bitIndex % 8
 
+	bf.internalFieldMu.Lock()
+	defer bf.internalFieldMu.Unlock()
+
 	return (bf.internalField[byteNum]>>(7-bitToQuery))&1 == 1, nil
 }
 
 func (bf *FixedSizeBitfield) BitsSetCount() int {
+	bf.bitsSetMu.Lock()
+	defer bf.bitsSetMu.Unlock()
 	return bf.bitsSet
 }
 
 func (bf *FixedSizeBitfield) IsFull() bool {
+	bf.bitsSetMu.Lock()
+	defer bf.bitsSetMu.Unlock()
 	return bf.bitsSet == bf.bitCount
 	/*
 		////// KEEPING THIS HERE IN CASE THE NEW SOLUTION IS BROKEN IN SOME WAY //////
@@ -92,10 +114,15 @@ func (bf *FixedSizeBitfield) IsFull() bool {
 
 func (bf *FixedSizeBitfield) ExposeBitfield() []byte {
 	// Makes a copy, so you can't accidentally affect the bitfield without safe-guards.
+	bf.internalFieldMu.Lock()
+	defer bf.internalFieldMu.Unlock()
 	return append([]byte{}, bf.internalField...)
 }
 
 func (bf *FixedSizeBitfield) countAllSetBits() int {
+	bf.internalFieldMu.Lock()
+	defer bf.internalFieldMu.Unlock()
+
 	setBitsCount := 0
 	for _, b := range bf.internalField {
 		setBitsCount += bits.OnesCount8(b)
@@ -119,13 +146,22 @@ func (bf *FixedSizeBitfield) ImportBitfield(data []byte) error {
 		}
 	}
 
+	bf.internalFieldMu.Lock()
 	bf.internalField = data
+	bf.internalFieldMu.Unlock()
+
+	bf.bitsSetMu.Lock()
+	defer bf.bitsSetMu.Unlock()
+
 	bf.bitsSet = bf.countAllSetBits()
 	return nil
 }
 
 func (bf *FixedSizeBitfield) GetUnsetBitsIndices() []int {
 	unsetBits := make([]int, 0)
+
+	bf.internalFieldMu.Lock()
+	defer bf.internalFieldMu.Unlock()
 
 	for byteind, currbyte := range bf.internalField {
 		bitsToIgnore := 0

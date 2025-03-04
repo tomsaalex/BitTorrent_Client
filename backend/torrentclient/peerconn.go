@@ -10,9 +10,9 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
-	generalerrors "github.com/tomsaalex/BitTorrent_Client/backend/GeneralErrors"
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
 )
 
@@ -42,7 +42,7 @@ type connData struct {
 }
 
 type connMessage struct {
-	peerConn peerConnection
+	peerConn *peerConnection
 	peerMsg  peerMessage
 }
 
@@ -79,168 +79,314 @@ type peerConnection struct {
 	output         chan connMessage
 	assemblerInput chan pieceMessage
 
-	connDataRequests chan bool
-	connDataReplies  chan connData
+	downloadDataCounter   int
+	downloadDataCounterMu sync.Mutex
 
-	pieceCheck  chan int
-	pieceStatus chan bool
+	downloadTransferSpeed   int
+	downloadTransferSpeedMu sync.Mutex
 
-	speedRequests chan bool
-	speedReplies  chan int
+	downloadRates   []int
+	downloadRatesMu sync.Mutex
+
+	connectionData   connData
+	connectionDataMu sync.Mutex
+
+	peerBitfield *customdatatypes.FixedSizeBitfield
 }
 
-func newPeerConnection(peer peer, td TorrentData, output chan connMessage, assemblerInput chan pieceMessage) (peerConnection, error) {
+func newPeerConnection(peer peer, td TorrentData, output chan connMessage, assemblerInput chan pieceMessage) (*peerConnection, error) {
 	connectAddress := peer.ip + ":" + strconv.Itoa(int(peer.port))
 
 	conn, err := net.Dial("tcp", connectAddress)
 
 	if err != nil {
-		return peerConnection{}, &PeerConnectionError{Message: "Failed to establish peer connection", InvolvedPeer: peer}
+		return nil, &PeerConnectionError{Message: "Failed to establish peer connection", InvolvedPeer: peer}
 	}
 	input := make(chan peerMessage)
 
-	cdRequests := make(chan bool)
-	cdReplies := make(chan connData)
-	pieceCheck := make(chan int)
-	pieceStatus := make(chan bool)
-	speedRequests := make(chan bool)
-	speedReplies := make(chan int)
+	downloadDataCounter := 0
+	downloadTransferSpeed := 0
 
-	peerConnection := peerConnection{otherPeer: peer, connection: conn, pieceCount: len(td.PieceHashes), input: input, output: output, assemblerInput: assemblerInput, connDataRequests: cdRequests, connDataReplies: cdReplies, pieceCheck: pieceCheck, pieceStatus: pieceStatus, speedRequests: speedRequests, speedReplies: speedReplies}
-	return peerConnection, nil
+	downloadRates := make([]int, 10)
+
+	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
+
+	remotePeerBitfield, err := customdatatypes.NewFixedSizeBitfield(len(td.PieceHashes))
+	if err != nil {
+		return nil, &MalformedTorrentError{Message: "Couldn't initialize bitfield for torrent. Number of pieces invalid."}
+	}
+
+	peerConnection := peerConnection{
+		otherPeer:             peer,
+		connection:            conn,
+		pieceCount:            len(td.PieceHashes),
+		input:                 input,
+		output:                output,
+		assemblerInput:        assemblerInput,
+		downloadDataCounter:   downloadDataCounter,
+		downloadTransferSpeed: downloadTransferSpeed,
+		downloadRates:         downloadRates,
+		connectionData:        cd,
+		peerBitfield:          remotePeerBitfield,
+	}
+	return &peerConnection, nil
 }
 
-func setupIncomingConnection(connInfo connBootstrapInfo, td TorrentData, output chan connMessage, assemblerInput chan pieceMessage) peerConnection {
+func setupIncomingConnection(connInfo connBootstrapInfo, td TorrentData, output chan connMessage, assemblerInput chan pieceMessage) (*peerConnection, error) {
 	input := make(chan peerMessage)
-
-	cdRequests := make(chan bool)
-	cdReplies := make(chan connData)
-	pieceCheck := make(chan int)
-	pieceStatus := make(chan bool)
-	speedRequests := make(chan bool)
-	speedReplies := make(chan int)
 
 	tcpAddr := connInfo.conn.RemoteAddr().(*net.TCPAddr)
 
 	otherPeer := peer{ip: tcpAddr.IP.String(), port: tcpAddr.AddrPort().Port()}
-	peerConnection := peerConnection{otherPeer: otherPeer, connection: connInfo.conn, pieceCount: len(td.PieceHashes), input: input, output: output, assemblerInput: assemblerInput, connDataRequests: cdRequests, connDataReplies: cdReplies, pieceCheck: pieceCheck, pieceStatus: pieceStatus, speedRequests: speedRequests, speedReplies: speedReplies}
 
-	return peerConnection
-}
+	downloadDataCounter := 0
+	downloadTransferSpeed := 0
 
-func (pc *peerConnection) createRemotePeerBitfield() (*customdatatypes.FixedSizeBitfield, error) {
-	remotePeerBitfield, err := customdatatypes.NewFixedSizeBitfield(pc.pieceCount)
+	downloadRates := make([]int, 10)
+
+	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
+
+	remotePeerBitfield, err := customdatatypes.NewFixedSizeBitfield(len(td.PieceHashes))
 	if err != nil {
-		_, isTypeInitErr := err.(*generalerrors.TypeInitializationError)
-
-		if isTypeInitErr {
-			return nil, &MalformedTorrentError{Message: "Couldn't initialize bitfield for torrent. Number of pieces invalid."}
-		}
+		return nil, &MalformedTorrentError{Message: "Couldn't initialize bitfield for torrent. Number of pieces invalid."}
 	}
 
-	return remotePeerBitfield, nil
+	peerConnection := peerConnection{
+		otherPeer:             otherPeer,
+		connection:            connInfo.conn,
+		pieceCount:            len(td.PieceHashes),
+		input:                 input,
+		output:                output,
+		assemblerInput:        assemblerInput,
+		downloadDataCounter:   downloadDataCounter,
+		downloadTransferSpeed: downloadTransferSpeed,
+		downloadRates:         downloadRates,
+		connectionData:        cd,
+		peerBitfield:          remotePeerBitfield,
+	}
+
+	return &peerConnection, nil
 }
 
-func addDataPoint(dataPoints []int, newPoint int) []int {
-	return append(dataPoints[1:], newPoint)
-}
-
-func calcConnectionSpeed(dataPoints []int) int {
-	rollingAverage := 0
+func calcAverageSpeed(dataPoints []int) int {
+	average := 0
 	for _, dp := range dataPoints {
-		rollingAverage += dp
+		average += dp
 	}
 
 	// We're working with byte counts here, so we can afford to round without losing anything significant
-	return rollingAverage / len(dataPoints)
+	return average / len(dataPoints)
 }
 
-func (pc *peerConnection) launchConnectionRoutines(dataReportsChan chan dataExchangeReport, speedReportChan chan speedExchangeReport, peerPieceChan chan peerPieceReport) {
-	// TODO: Make channels arguments one way
-	forwarderStateUpdater := make(chan StateUpdateType)
-	receiverStateUpdater := make(chan StateUpdateType)
-
-	receiverPeerIndexUpdater := make(chan int)
-	downloadDataRateUpdater := make(chan int)
-
-	peerBitfieldUpdater := make(chan []byte)
-
-	go pc.connDataManager(forwarderStateUpdater, receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater, dataReportsChan, speedReportChan, peerPieceChan)
-	go pc.forwarderController(forwarderStateUpdater)
-	go pc.receiverController(receiverStateUpdater, receiverPeerIndexUpdater, downloadDataRateUpdater, peerBitfieldUpdater)
+func (pc *peerConnection) launchConnectionRoutines(ctx context.Context, tStats *TorrentStats) {
+	go pc.connDataManager(ctx, tStats)
+	go pc.forwarderController(ctx)
+	go pc.receiverController(ctx, tStats)
 }
 
-func (pc *peerConnection) forwarderController(stateUpdater chan<- StateUpdateType) {
-	toForwarder := make(chan peerMessage)
-
-	go pc.forwarderRoutine(toForwarder)
+func (pc *peerConnection) forwarderController(ctx context.Context) {
+	keepAliveTicker := time.NewTicker(KEEP_ALIVE_TIME)
 
 	for {
 		select {
 		case rawMessage := <-pc.input:
-			toForwarder <- rawMessage
+			pc.forwarderRoutine(rawMessage)
 			// TODO: Should really quantify the amount of data sent in the connDataManager routine
 			switch rawMessage.(type) {
 			case chokeMessage:
-				stateUpdater <- Choked
+				pc.updateLocalConnState(Choked)
 			case unchokeMessage:
-				stateUpdater <- Unchoked
+				pc.updateLocalConnState(Unchoked)
 			case interestedMessage:
-				stateUpdater <- Interested
+				pc.updateLocalConnState(Interested)
 			case notInterestedMessage:
-				stateUpdater <- NotInterested
+				pc.updateLocalConnState(NotInterested)
 			}
+		case <-keepAliveTicker.C:
+			pc.sendKeepAlive()
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelInfo,
+				"Sent keep alive",
+				slog.String("peerIP", pc.otherPeer.ip),
+				slog.Int("PeerPort", int(pc.otherPeer.port)),
+			)
+		case <-ctx.Done():
+			fmt.Println("Exitted out of forwarderController.")
+			return
 		}
 	}
 }
 
-func (pc *peerConnection) receiverController(stateUpdater chan<- StateUpdateType, peerIndexUpdate chan<- int, dataRateUpdate chan<- int, peerBitfieldUpdate chan<- []byte) {
-	receiverOutput := make(chan peerMessage)
+func (pc *peerConnection) receiverController(ctx context.Context, tStats *TorrentStats) {
+	buffcon := bufio.NewReader(pc.connection)
 
-	go pc.receiverRoutine(receiverOutput)
-	pieceCounter := 0
+	for {
+		// TODO: Perhaps we shouldn't even be accepting data from choked peers? (we have to, but we should just dismiss some)
+		rawMessage, err := pc.receiveMessage(buffcon)
+
+		if err != nil {
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelError,
+				"Error receiving message from remote peer. Connection dropped.",
+				slog.String("peerIP", pc.otherPeer.ip),
+				slog.Int("PeerPort", int(pc.otherPeer.port)),
+			)
+
+			select {
+			case pc.output <- connMessage{peerMsg: connectionDropMessage{}, peerConn: pc}:
+			case <-ctx.Done():
+			}
+			return
+		}
+
+		connData := pc.getConnectionData()
+
+		switch peerMessage := rawMessage.(type) {
+		case chokeMessage:
+			pc.updateRemoteConnState(Choked)
+		case unchokeMessage:
+			pc.updateRemoteConnState(Unchoked)
+			pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}
+		case interestedMessage:
+			pc.updateRemoteConnState(Interested)
+		case notInterestedMessage:
+			pc.updateRemoteConnState(NotInterested)
+		case haveMessage:
+			pc.newHasFromPeer(tStats, peerMessage.pieceIndex)
+		case pieceMessage:
+			pc.assemblerInput <- peerMessage
+			pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}
+			pc.updateDownloadedAmount(tStats, len(peerMessage.block))
+		case requestMessage:
+			if connData.amChoking {
+				break
+			}
+			pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}
+		case cancelMessage:
+			if connData.amChoking {
+				break
+			}
+			pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}
+		case bitfieldMessage:
+			// TODO: Presumably, we should ignore it if it gets sent more than once?
+			err := pc.setPeerBitfield(peerMessage.bitfield)
+			if err != nil {
+				select {
+				case pc.output <- connMessage{peerMsg: connectionDropMessage{}, peerConn: pc}:
+				case <-ctx.Done():
+				}
+				return
+			}
+		}
+		/*case <-ctx.Done():
+		fmt.Println("Exitted out of receiverController")
+		return
+		*/
+	}
+}
+
+func (pc *peerConnection) updateLocalConnState(updateType StateUpdateType) {
+	pc.connectionDataMu.Lock()
+	defer pc.connectionDataMu.Unlock()
+
+	switch updateType {
+	case Choked:
+		pc.connectionData.amChoking = true
+	case Unchoked:
+		pc.connectionData.amChoking = false
+	case Interested:
+		pc.connectionData.amInterested = true
+	case NotInterested:
+		pc.connectionData.amInterested = false
+	}
+}
+
+func (pc *peerConnection) updateRemoteConnState(updateType StateUpdateType) {
+	pc.connectionDataMu.Lock()
+	defer pc.connectionDataMu.Unlock()
+
+	switch updateType {
+	case Choked:
+		pc.connectionData.peerChoking = true
+	case Unchoked:
+		pc.connectionData.peerChoking = false
+	case Interested:
+		pc.connectionData.peerInterested = true
+	case NotInterested:
+		pc.connectionData.peerInterested = false
+	}
+}
+
+func (pc *peerConnection) newHasFromPeer(tStats *TorrentStats, pieceIndex int) {
+	pc.peerBitfield.SetBit(pieceIndex)
+	tStats.updateRemotePeerPieces(peerPieceReport{remotePeer: pc.otherPeer, reportedPieceIndex: pieceIndex})
+}
+
+func (pc *peerConnection) updateDownloadedAmount(tStats *TorrentStats, downloadedAmount int) {
+	pc.downloadDataCounterMu.Lock()
+	defer pc.downloadDataCounterMu.Unlock()
+
+	pc.downloadDataCounter += downloadedAmount
+	tStats.addDataReport(dataExchangeReport{remotePeer: pc.otherPeer, trafType: IncomingTraffic, exchangedDataCount: downloadedAmount})
+}
+
+func (pc *peerConnection) getConnectionData() connData {
+	pc.connectionDataMu.Lock()
+	defer pc.connectionDataMu.Unlock()
+
+	return pc.connectionData
+}
+
+func (pc *peerConnection) peerHasPiece(pieceIndex int) (bool, error) {
+	return pc.peerBitfield.IsSet(pieceIndex)
+}
+
+func (pc *peerConnection) connDownloadSpeed() int {
+	pc.downloadTransferSpeedMu.Lock()
+	defer pc.downloadTransferSpeedMu.Unlock()
+
+	return pc.downloadTransferSpeed
+}
+
+func (pc *peerConnection) setPeerBitfield(bitfield []byte) error {
+	// TODO: Where this is called, if the error is not null, we must drop the connection
+	return pc.peerBitfield.ImportBitfield(bitfield)
+}
+
+func (pc *peerConnection) updateDownloadSpeed(tStats *TorrentStats) {
+	pc.downloadRatesMu.Lock()
+	defer pc.downloadRatesMu.Unlock()
+
+	pc.downloadDataCounterMu.Lock()
+	defer pc.downloadDataCounterMu.Unlock()
+
+	pc.downloadRates = append(pc.downloadRates[1:], pc.downloadDataCounter)
+
+	pc.downloadTransferSpeedMu.Lock()
+	defer pc.downloadTransferSpeedMu.Unlock()
+
+	pc.downloadTransferSpeed = calcAverageSpeed(pc.downloadRates)
+
+	pc.downloadDataCounter = 0
+	tStats.addSpeedReport(speedExchangeReport{remotePeer: pc.otherPeer, connSpeed: pc.downloadTransferSpeed, trafType: IncomingTraffic})
+}
+
+func (pc *peerConnection) connDataManager(ctx context.Context, tStats *TorrentStats) {
+	downloadRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
+
 	for {
 		select {
-		case rawMessage := <-receiverOutput:
-			pc.connDataRequests <- true // TODO: This channel and many others really should be buffered for performance.
-			connData := <-pc.connDataReplies
-
-			switch peerMessage := rawMessage.(type) {
-			case chokeMessage:
-				stateUpdater <- Choked
-			case unchokeMessage:
-				stateUpdater <- Unchoked
-				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-			case interestedMessage:
-				stateUpdater <- Interested
-			case notInterestedMessage:
-				stateUpdater <- NotInterested
-			case haveMessage:
-				peerIndexUpdate <- peerMessage.pieceIndex
-			case pieceMessage:
-				pieceCounter++
-				fmt.Println("Pieces received: " + strconv.Itoa(pieceCounter))
-				pc.assemblerInput <- peerMessage
-				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-				dataRateUpdate <- len(peerMessage.block)
-			case requestMessage:
-				if connData.amChoking {
-					break
-				}
-				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-			case cancelMessage:
-				if connData.amChoking {
-					break
-				}
-				pc.output <- connMessage{peerMsg: peerMessage, peerConn: *pc}
-			case bitfieldMessage:
-				peerBitfieldUpdate <- peerMessage.bitfield
-			}
+		case <-downloadRateTicker.C:
+			pc.updateDownloadSpeed(tStats)
+		case <-ctx.Done():
+			return
 		}
 	}
 }
 
-func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdateType, receiverStateUpdate <-chan StateUpdateType, peerIndexUpdate <-chan int, receiverDataRateUpdate <-chan int, peerBitfieldUpdate <-chan []byte, dataReportChan chan dataExchangeReport, speedReportChan chan speedExchangeReport, peerPieceChan chan peerPieceReport) {
+/*func (pc *peerConnection) connDataManager(ctx context.Context, tStats *TorrentStats, forwarderStateUpdate <-chan StateUpdateType, receiverStateUpdate <-chan StateUpdateType, peerIndexUpdate <-chan int, receiverDataRateUpdate <-chan int, peerBitfieldUpdate <-chan []byte) {
 	downloadDataCounter := 0
 	downloadTransferSpeed := 0
 
@@ -284,10 +430,10 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 			// TODO: Now that we're storing all of the remote peer bitfields in the torrentStats, consider whether we should still store them here.
 			// It might be a good idea for performance, aka leaving the one in torrentStats just for the sake of the UI.
 			// Think on this later.
-			peerPieceChan <- peerPieceReport{remotePeer: pc.otherPeer, reportedPieceIndex: newHas}
+			tStats.updateRemotePeerPieces(peerPieceReport{remotePeer: pc.otherPeer, reportedPieceIndex: newHas})
 		case dataReport := <-receiverDataRateUpdate:
 			downloadDataCounter += dataReport
-			dataReportChan <- dataExchangeReport{remotePeer: pc.otherPeer, trafType: IncomingTraffic, exchangedDataCount: dataReport}
+			tStats.addDataReport(dataExchangeReport{remotePeer: pc.otherPeer, trafType: IncomingTraffic, exchangedDataCount: dataReport})
 		case <-pc.connDataRequests:
 			pc.connDataReplies <- cd
 		case index := <-pc.pieceCheck:
@@ -299,7 +445,7 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 			downloadRates = addDataPoint(downloadRates, downloadDataCounter)
 			downloadTransferSpeed = calcConnectionSpeed(downloadRates)
 			downloadDataCounter = 0
-			speedReportChan <- speedExchangeReport{remotePeer: pc.otherPeer, connSpeed: downloadTransferSpeed, trafType: IncomingTraffic}
+			tStats.addSpeedReport(speedExchangeReport{remotePeer: pc.otherPeer, connSpeed: downloadTransferSpeed, trafType: IncomingTraffic})
 		case bitfield := <-peerBitfieldUpdate:
 			// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
 			err := peerBitfield.ImportBitfield(bitfield)
@@ -308,155 +454,117 @@ func (pc *peerConnection) connDataManager(forwarderStateUpdate <-chan StateUpdat
 				panic(err)
 				// TODO: DROP CONNECTION
 			}
+		case <-ctx.Done():
+			fmt.Println("Exitted out of connDataManager")
+			return
 		}
 	}
-}
+}*/
 
-func (pc *peerConnection) forwarderRoutine(msgInput <-chan peerMessage) {
-	keepAliveTicker := time.NewTicker(KEEP_ALIVE_TIME)
+func (pc *peerConnection) forwarderRoutine(message peerMessage) {
+	switch peerMessage := message.(type) {
+	case chokeMessage:
+		pc.sendChoke()
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent choke",
+			slog.String("peerIP", pc.otherPeer.ip),
+			slog.Int("PeerPort", int(pc.otherPeer.port)),
+		)
+	case unchokeMessage:
+		pc.sendUnchoke()
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent unchoke",
+			slog.String("peerIP", pc.otherPeer.ip),
+			slog.Int("PeerPort", int(pc.otherPeer.port)),
+		)
+	case interestedMessage:
+		pc.sendInterested()
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent interested",
+			slog.String("peerIP", pc.otherPeer.ip),
+			slog.Int("PeerPort", int(pc.otherPeer.port)),
+		)
+	case notInterestedMessage:
+		pc.sendNotInterested()
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent not interested",
+			slog.String("peerIP", pc.otherPeer.ip),
+			slog.Int("PeerPort", int(pc.otherPeer.port)),
+		)
+	case haveMessage:
+		pc.sendHave(peerMessage.pieceIndex)
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent have",
+			slog.Int("PieceIndex", peerMessage.pieceIndex),
+			slog.String("peerIP", pc.otherPeer.ip),
+			slog.Int("PeerPort", int(pc.otherPeer.port)),
+		)
+	case pieceMessage:
+		index := peerMessage.index
+		begin := peerMessage.begin
+		block := peerMessage.block
 
-	for {
-		select {
-		case rawMsg := <-msgInput:
-			switch peerMessage := rawMsg.(type) {
-			case chokeMessage:
-				pc.sendChoke()
-				slog.LogAttrs(
-					context.Background(),
-					slog.LevelInfo,
-					"Sent choke",
-					slog.String("peerIP", pc.otherPeer.ip),
-					slog.Int("PeerPort", int(pc.otherPeer.port)),
-				)
-			case unchokeMessage:
-				pc.sendUnchoke()
-				slog.LogAttrs(
-					context.Background(),
-					slog.LevelInfo,
-					"Sent unchoke",
-					slog.String("peerIP", pc.otherPeer.ip),
-					slog.Int("PeerPort", int(pc.otherPeer.port)),
-				)
-			case interestedMessage:
-				pc.sendInterested()
-				slog.LogAttrs(
-					context.Background(),
-					slog.LevelInfo,
-					"Sent interested",
-					slog.String("peerIP", pc.otherPeer.ip),
-					slog.Int("PeerPort", int(pc.otherPeer.port)),
-				)
-			case notInterestedMessage:
-				pc.sendNotInterested()
-				slog.LogAttrs(
-					context.Background(),
-					slog.LevelInfo,
-					"Sent not interested",
-					slog.String("peerIP", pc.otherPeer.ip),
-					slog.Int("PeerPort", int(pc.otherPeer.port)),
-				)
-			case haveMessage:
-				pc.sendHave(peerMessage.pieceIndex)
-				slog.LogAttrs(
-					context.Background(),
-					slog.LevelInfo,
-					"Sent have",
-					slog.Int("PieceIndex", peerMessage.pieceIndex),
-					slog.String("peerIP", pc.otherPeer.ip),
-					slog.Int("PeerPort", int(pc.otherPeer.port)),
-				)
-			case pieceMessage:
-				index := peerMessage.index
-				begin := peerMessage.begin
-				block := peerMessage.block
+		pc.sendPiece(index, begin, block)
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent piece block",
+			slog.Int("PieceIndex", index),
+			slog.Int("BlockOffset", begin),
+			slog.String("peerIP", pc.otherPeer.ip),
+			slog.Int("PeerPort", int(pc.otherPeer.port)),
+		)
+	case requestMessage:
+		index := peerMessage.index
+		begin := peerMessage.begin
+		length := peerMessage.length
 
-				pc.sendPiece(index, begin, block)
-				slog.LogAttrs(
-					context.Background(),
-					slog.LevelInfo,
-					"Sent piece block",
-					slog.Int("PieceIndex", index),
-					slog.Int("BlockOffset", begin),
-					slog.String("peerIP", pc.otherPeer.ip),
-					slog.Int("PeerPort", int(pc.otherPeer.port)),
-				)
-			case requestMessage:
-				index := peerMessage.index
-				begin := peerMessage.begin
-				length := peerMessage.length
+		pc.sendRequest(index, begin, length)
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent block request",
+			slog.Int("PieceIndex", index),
+			slog.Int("BlockOffset", begin),
+			slog.String("peerIP", pc.otherPeer.ip),
+			slog.Int("PeerPort", int(pc.otherPeer.port)),
+		)
+	case cancelMessage:
+		index := peerMessage.index
+		begin := peerMessage.begin
+		length := peerMessage.length
+		pc.sendCancel(index, begin, length)
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent cancel request",
+			slog.Int("PieceIndex", index),
+			slog.Int("BlockOffset", begin),
+			slog.String("peerIP", pc.otherPeer.ip),
+			slog.Int("PeerPort", int(pc.otherPeer.port)),
+		)
+	case bitfieldMessage:
+		bitfieldBytes := peerMessage.bitfield
 
-				pc.sendRequest(index, begin, length)
-				slog.LogAttrs(
-					context.Background(),
-					slog.LevelInfo,
-					"Sent block request",
-					slog.Int("PieceIndex", index),
-					slog.Int("BlockOffset", begin),
-					slog.String("peerIP", pc.otherPeer.ip),
-					slog.Int("PeerPort", int(pc.otherPeer.port)),
-				)
-			case cancelMessage:
-				index := peerMessage.index
-				begin := peerMessage.begin
-				length := peerMessage.length
-				pc.sendCancel(index, begin, length)
-				slog.LogAttrs(
-					context.Background(),
-					slog.LevelInfo,
-					"Sent cancel request",
-					slog.Int("PieceIndex", index),
-					slog.Int("BlockOffset", begin),
-					slog.String("peerIP", pc.otherPeer.ip),
-					slog.Int("PeerPort", int(pc.otherPeer.port)),
-				)
-			case bitfieldMessage:
-				bitfieldBytes := peerMessage.bitfield
+		pc.sendBitfield(bitfieldBytes)
 
-				pc.sendBitfield(bitfieldBytes)
-
-				slog.LogAttrs(
-					context.Background(),
-					slog.LevelInfo,
-					"Sent bitfield",
-					slog.String("peerIP", pc.otherPeer.ip),
-					slog.Int("PeerPort", int(pc.otherPeer.port)),
-				)
-			}
-		case <-keepAliveTicker.C:
-			pc.sendKeepAlive()
-			slog.LogAttrs(
-				context.Background(),
-				slog.LevelInfo,
-				"Sent keep alive",
-				slog.String("peerIP", pc.otherPeer.ip),
-				slog.Int("PeerPort", int(pc.otherPeer.port)),
-			)
-		}
-	}
-}
-
-func (pc *peerConnection) receiverRoutine(msgOutput chan<- peerMessage) {
-	buffcon := bufio.NewReader(pc.connection)
-
-	for {
-		// TODO: Perhaps we shouldn't even be accepting data from choked peers? (we have to, but we should just dismiss some)
-		peerMessage, err := pc.receiveMessage(buffcon)
-		if err != nil {
-
-			// TODO: Handle this more nicely, though idk how, cause this is in a goroutine
-			//panic(err)
-			slog.LogAttrs(
-				context.Background(),
-				slog.LevelError,
-				"Error receiving message from remote peer. Connection dropped.",
-				slog.String("peerIP", pc.otherPeer.ip),
-				slog.Int("PeerPort", int(pc.otherPeer.port)),
-			)
-			pc.connection.Close()
-			// TODO: Just a temporary patch
-			time.Sleep(10000 * time.Millisecond)
-		}
-		msgOutput <- peerMessage
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent bitfield",
+			slog.String("peerIP", pc.otherPeer.ip),
+			slog.Int("PeerPort", int(pc.otherPeer.port)),
+		)
 	}
 }
 

@@ -1,7 +1,10 @@
 package torrentclient
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha1"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -10,6 +13,11 @@ import (
 )
 
 const TEMP_DOWNLOAD_LOCATION = "download_location/"
+
+type pieceValidationResult struct {
+	pieceIndex int
+	valid      bool
+}
 
 type BlockRetrievalRequest struct {
 	req         requestMessage
@@ -92,7 +100,7 @@ func (dm *DiskManager) writePieceMappingToFile(actualPath string, pm PieceFileMa
 
 func (dm *DiskManager) readPieceMappingFromFile(actualPath string, pm PieceFileMapping) ([]byte, error) {
 	// Open file for reading
-	file, err := os.OpenFile(actualPath, os.O_RDWR, 0777)
+	file, err := os.OpenFile(actualPath, os.O_RDONLY, 0777)
 	if err != nil {
 		return []byte{}, &IOError{Message: "Couldn't open file: " + actualPath}
 	}
@@ -176,7 +184,7 @@ func (dm *DiskManager) MapPieceToFiles(p piece, tData *TorrentData) []PieceFileM
 	return pieceFileMappings
 }
 
-func (dm *DiskManager) fileWriter(pieceInput <-chan piece, pieceStoredAnnounce chan<- int, requestsInput <-chan BlockRetrievalRequest, tData *TorrentData) {
+func (dm *DiskManager) fileWriter(ctx context.Context, pieceInput <-chan piece, pieceStoredAnnounce chan<- int, requestsInput <-chan BlockRetrievalRequest, tData *TorrentData) {
 	fileIndex := make(map[string]bool)
 	var directoryName string
 	if len(tData.Files) > 0 {
@@ -241,6 +249,109 @@ func (dm *DiskManager) fileWriter(pieceInput <-chan piece, pieceStoredAnnounce c
 			requestedBlock := retrievedBlock[retrievalRequest.req.begin : retrievalRequest.req.begin+retrievalRequest.req.length]
 			pieceMessage := pieceMessage{index: retrievalRequest.req.index, begin: retrievalRequest.req.begin, block: requestedBlock}
 			retrievalRequest.pieceOutput <- pieceMessage
+		case <-ctx.Done():
+			fmt.Println("Exitted out of fileWriter")
+			return
 		}
 	}
+}
+
+func (dm *DiskManager) pieceFileMappingsForTorrent(tData TorrentData) []PieceFileMapping {
+	pieceFileMappings := make([]PieceFileMapping, 0)
+
+	pieceLength := tData.PieceLength
+	remainder := tData.TorrentSize % len(tData.PieceHashes)
+	if len(tData.Files) == 0 {
+		for i, _ := range tData.PieceHashes {
+			p := piece{pieceIndex: i, data: nil}
+
+			if p.pieceIndex == len(tData.PieceHashes)-1 && remainder != 0 {
+				pieceLength = remainder
+			}
+
+			fileOffset := int64(p.pieceIndex * tData.PieceLength)
+			pieceMapping := PieceFileMapping{p: p, filePath: tData.Name, fileOffset: fileOffset, pieceOffsetStart: 0, pieceOffsetEnd: int64(pieceLength)}
+			pieceFileMappings = append(pieceFileMappings, pieceMapping)
+
+		}
+		return pieceFileMappings
+	}
+
+	var fileOffset int64
+	var pieceOffset int64 = 0
+	pieceIndex := 0
+
+	for _, file := range tData.Files {
+		fileOffset = 0
+
+		for fileOffset < int64(file.FileLength) {
+			if file.FileLength-int(fileOffset) >= pieceLength-int(pieceOffset) {
+				p := piece{pieceIndex: pieceIndex, data: nil}
+
+				newMapping := PieceFileMapping{p: p, filePath: file.FilePath, fileOffset: fileOffset, pieceOffsetStart: int64(pieceOffset), pieceOffsetEnd: int64(pieceOffset) + int64(pieceLength-int(pieceOffset))}
+				pieceFileMappings = append(pieceFileMappings, newMapping)
+
+				fileOffset += int64(pieceLength - int(pieceOffset))
+				pieceOffset = 0
+				pieceIndex++
+			} else {
+				p := piece{pieceIndex: pieceIndex, data: nil}
+
+				newPieceOffset := pieceOffset + int64(file.FileLength-int(fileOffset))
+				newMapping := PieceFileMapping{p: p, filePath: file.FilePath, fileOffset: fileOffset, pieceOffsetStart: int64(pieceOffset), pieceOffsetEnd: newPieceOffset}
+				pieceFileMappings = append(pieceFileMappings, newMapping)
+
+				fileOffset += int64(file.FileLength - int(fileOffset))
+				pieceOffset = newPieceOffset
+			}
+		}
+
+	}
+
+	return pieceFileMappings
+}
+
+func (dm *DiskManager) checkTorrentIntegrity(tData TorrentData, res chan<- pieceValidationResult) {
+	// This won't be implemented using the MapPieceToFiles as it would mean looping over all the files for each piece.
+	// That's insanely inefficient.
+
+	var directoryName string
+	if len(tData.Files) > 0 {
+		directoryName = tData.Name
+	} else {
+		directoryName = ""
+	}
+
+	pieceFileMappings := dm.pieceFileMappingsForTorrent(tData)
+	pieceBuffer := make([]byte, 0)
+
+	prevBadFilePath := ""
+	for i, pieceMapping := range pieceFileMappings {
+		joinedPath := filepath.Join(TEMP_DOWNLOAD_LOCATION, directoryName, pieceMapping.filePath)
+		if joinedPath == prevBadFilePath {
+			continue
+		}
+		data, _ := dm.readPieceMappingFromFile(joinedPath, pieceMapping)
+
+		pieceBuffer = append(pieceBuffer, data...)
+
+		if i < len(pieceFileMappings)-1 && pieceFileMappings[i+1].p.pieceIndex != pieceMapping.p.pieceIndex ||
+			i == len(pieceFileMappings)-1 {
+			pieceValid := dm.pieceValid(&tData, piece{pieceIndex: pieceMapping.p.pieceIndex, data: pieceBuffer})
+
+			res <- pieceValidationResult{pieceIndex: pieceMapping.p.pieceIndex, valid: pieceValid}
+			pieceBuffer = make([]byte, 0)
+		}
+	}
+
+	close(res)
+}
+
+func (dm *DiskManager) pieceValid(tData *TorrentData, p piece) bool {
+	var sha = sha1.New()
+	sha.Write(p.data)
+	pieceHash := sha.Sum(nil)[:20]
+
+	hashCorrect := bytes.Equal(pieceHash, tData.PieceHashes[p.pieceIndex].HashBytes)
+	return hashCorrect
 }

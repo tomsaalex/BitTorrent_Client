@@ -22,6 +22,7 @@ type TorrentClient struct {
 	torrentParser TorrentParser
 
 	AppContext context.Context
+	Cancel     context.CancelFunc
 
 	addTorrentChan chan string
 
@@ -52,12 +53,16 @@ func NewTorrentClient() *TorrentClient {
 
 func (tc *TorrentClient) LaunchRoutines() {
 	go tc.clientRoutine()
-	go handleIncomingConnections(tc.servedTorrentRequest, tc.servedTorrentReply)
-
 }
 
 func (tc *TorrentClient) clientRoutine() {
 	torrents := make([]torrentHost, 0)
+
+	ctx, cancel := context.WithCancel(tc.AppContext)
+	defer cancel()
+	tc.Cancel = cancel
+
+	go handleIncomingConnections(ctx, tc.servedTorrentRequest, tc.servedTorrentReply)
 
 	for {
 		select {
@@ -71,7 +76,7 @@ func (tc *TorrentClient) clientRoutine() {
 
 			torrents = append(torrents, *newTorrent)
 
-			go newTorrent.torrentManager()
+			go newTorrent.torrentManager(ctx)
 
 		case <-tc.reportRequestChan:
 			tc.reportReplyChan <- tc.handleGenerateAggregateReport(torrents)
@@ -87,6 +92,9 @@ func (tc *TorrentClient) clientRoutine() {
 			if !foundTorrent {
 				tc.servedTorrentReply <- nil
 			}
+		case <-ctx.Done():
+			fmt.Println("Exited clientRoutine")
+			return
 		}
 	}
 }
@@ -109,7 +117,8 @@ func (tc *TorrentClient) handleGenerateAggregateReport(torrents []torrentHost) A
 
 func (tc *TorrentClient) GenerateAggregateReport() AggregateReport {
 	tc.reportRequestChan <- true
-	return <-tc.reportReplyChan
+	report := <-tc.reportReplyChan
+	return report
 }
 
 func (tc *TorrentClient) handleAddTorrent(torrentFilePath string) (*torrentHost, error) {

@@ -35,7 +35,6 @@ func main() {
 	app := NewApp()
 
 	client := torrentclient.NewTorrentClient()
-	client.LaunchRoutines()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
@@ -56,6 +55,20 @@ func main() {
 		OnStartup: func(ctx context.Context) {
 			app.ctx = ctx
 			client.AppContext = ctx
+			client.LaunchRoutines()
+
+			/*go func() {
+				c := time.After(time.Second * 10)
+				<-c
+				client.Cancel()
+				fmt.Println("Called cancel")
+				go func() {
+					c := time.After(time.Second * 5)
+					<-c
+					fmt.Println("There are currently #" + strconv.Itoa(goRuntime.NumGoroutine()) + " goroutines active right now.")
+				}()
+			}()*/
+
 			runtime.EventsOn(ctx, "selectFile", func(optionalData ...interface{}) {
 				// TODO: this entire event should be handled somewhere else with more frontend interaction. (double checking the file is right and showing the contents of the torrent and such)
 
@@ -85,6 +98,9 @@ func main() {
 
 			//hwnd := win.FindWindow(nil, syscall.StringToUTF16Ptr("BitTorrent_Client"))
 			//win.SetWindowLong(hwnd, win.GWL_EXSTYLE, win.GetWindowLong(hwnd, win.GWL_EXSTYLE)|win.WS_EX_LAYERED)
+
+		},
+		OnShutdown: func(ctx context.Context) {
 
 		},
 		Bind: []interface{}{

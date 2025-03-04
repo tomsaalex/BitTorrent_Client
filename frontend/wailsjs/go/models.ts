@@ -59,6 +59,8 @@ export namespace torrentclient {
 	export class TorrentStatsDTO {
 	    uploadedBytes: number;
 	    downloadedBytes: number;
+	    torrentState: number;
+	    recheckedPiecesCount: number;
 	    connectionDataStatuses: {[key: string]: ConnectionDataStatusDTO};
 	    piecesOnDiskCount: number;
 	    piecesStoredToDisk: number[];
@@ -72,6 +74,8 @@ export namespace torrentclient {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.uploadedBytes = source["uploadedBytes"];
 	        this.downloadedBytes = source["downloadedBytes"];
+	        this.torrentState = source["torrentState"];
+	        this.recheckedPiecesCount = source["recheckedPiecesCount"];
 	        this.connectionDataStatuses = this.convertValues(source["connectionDataStatuses"], ConnectionDataStatusDTO, true);
 	        this.piecesOnDiskCount = source["piecesOnDiskCount"];
 	        this.piecesStoredToDisk = source["piecesStoredToDisk"];
