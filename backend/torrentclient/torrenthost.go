@@ -56,6 +56,7 @@ func (th *torrentHost) trackerManager(ctx context.Context, eventsChannel <-chan 
 		case <-triggerChannel:
 			handleAnnounce(T_NIL)
 		case <-ctx.Done():
+			handleAnnounce(T_STOPPED)
 			fmt.Println("Exitted out of trackerManager")
 			return
 		}
@@ -118,7 +119,7 @@ func (th *torrentHost) torrentManager(ctx context.Context) {
 
 	blockRequestsInput := make(chan BlockRetrievalRequest)
 
-	//th.recheckTorrent()
+	th.recheckTorrent()
 
 	go th.trackerManager(ctx, trackerEventsChannel, peerListChannel)
 	go th.peerConnectionManager.connectionManager(ctx, th.torrentData, th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, havePieceAnnouncer, blockRequestsInput)
