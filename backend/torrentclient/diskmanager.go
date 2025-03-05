@@ -134,7 +134,7 @@ func (dm *DiskManager) MapPieceToFiles(p piece, tData *TorrentData) []PieceFileM
 	// This is done instead of using len(p.data) because we want to be able to generate mappings for block requests too
 	// But we still need the reference to the piece so we can put it in the mappings.
 	pieceLength := tData.PieceLength
-	remainder := tData.TorrentSize % len(tData.PieceHashes)
+	remainder := tData.TorrentSize % tData.PieceLength
 	if p.pieceIndex == len(tData.PieceHashes)-1 && remainder != 0 {
 		pieceLength = remainder
 	}
