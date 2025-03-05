@@ -50,6 +50,9 @@ type TorrentStats struct {
 	downloadedBytes   int
 	downloadedBytesMu sync.Mutex
 
+	partialPiecesBytes   int
+	partialPiecesBytesMu sync.Mutex
+
 	pieceIndex *customdatatypes.FixedSizeBitfield
 
 	connectionDataStatuses   map[string]connectionDataStatus
@@ -262,6 +265,20 @@ func (ts *TorrentStats) UpdateRecheckedPieces(pieceIndex *customdatatypes.FixedS
 
 	ts.unselectedPieces = pieceIndex.GetUnsetBitsIndices()
 	return nil
+}
+
+func (ts *TorrentStats) addPartialPiecesBytes(newlyAddedBytes int) {
+	ts.partialPiecesBytesMu.Lock()
+	defer ts.partialPiecesBytesMu.Unlock()
+
+	ts.partialPiecesBytes += newlyAddedBytes
+}
+
+func (ts *TorrentStats) getPartialPiecesBytes() int {
+	ts.partialPiecesBytesMu.Lock()
+	defer ts.partialPiecesBytesMu.Unlock()
+
+	return ts.partialPiecesBytes
 }
 
 func NewTorrentStats(infohash customdatatypes.CustomHash, pieceCount int) (*TorrentStats, error) {

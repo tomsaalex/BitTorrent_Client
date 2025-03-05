@@ -137,23 +137,24 @@ func (tc *trackerConnection) announceRequest(ctx context.Context, td TorrentData
 
 	requestParameters := url.Values{}
 
-	torrentSize := 0
-
-	if len(td.Files) > 0 {
-		for _, fileData := range td.Files {
-			torrentSize += fileData.FileLength
-		}
-	} else {
-		torrentSize = td.FileLength
+	bytesLeft := 0
+	piecesLeft := len(td.PieceHashes) - tStats.piecesStoredToDisk.BitsSetCount()
+	lastPieceObtained, _ := tStats.piecesStoredToDisk.IsSet(len(td.PieceHashes) - 1)
+	if !lastPieceObtained {
+		bytesLeft += td.lastPieceLength()
+		piecesLeft--
 	}
+
+	bytesLeft += piecesLeft * td.PieceLength
+	bytesLeft -= tStats.getPartialPiecesBytes()
 
 	requestParameters.Add("info_hash", string(td.Infohash.HashBytes))
 	requestParameters.Add("peer_id", string(peerID.HashBytes))
 	//requestParameters.Add("ip", "tomsa.go.ro")                                  // Replace this with something proper
-	requestParameters.Add("port", "63999")                                          // Replace this with the proper port
-	requestParameters.Add("uploaded", strconv.Itoa(tStats.uploadedBytes))           //
-	requestParameters.Add("downloaded", strconv.Itoa(tStats.downloadedBytes))       //
-	requestParameters.Add("left", strconv.Itoa(torrentSize-tStats.downloadedBytes)) //
+	requestParameters.Add("port", "63999")                                    // Replace this with the proper port
+	requestParameters.Add("uploaded", strconv.Itoa(tStats.uploadedBytes))     //
+	requestParameters.Add("downloaded", strconv.Itoa(tStats.downloadedBytes)) //
+	requestParameters.Add("left", strconv.Itoa(bytesLeft))                    //
 	requestParameters.Add("compact", "1")
 
 	if te != T_NIL {

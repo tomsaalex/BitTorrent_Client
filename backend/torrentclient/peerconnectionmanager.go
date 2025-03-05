@@ -116,7 +116,7 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 	assemblerInput := make(chan pieceMessage)
 	assemblerOutput := make(chan piece)
 
-	go pcm.pieceAssembler(ctx, torrentData, assemblerInput, assemblerOutput)
+	go pcm.pieceAssembler(ctx, torrentData, tStats, assemblerInput, assemblerOutput)
 
 	for {
 		select {
@@ -153,7 +153,7 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 				requestedPieces := tStats.requestedPiecesCopy()
 
 				pcm.changeUnchokedDownloaders(ctx, peer{}, tStats)
-				if len(requestedPieces) < piecesDownloadNum {
+				if len(requestedPieces) < piecesDownloadNum && len(tStats.unselectedPiecesCopy()) > 0 {
 					pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), torrentData.PieceLength)
 				}
 			}
@@ -171,7 +171,7 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 				// It prevents most of the annoying 10-15 seconds wait when the download starts.
 				requestedPieces := tStats.requestedPiecesCopy()
 
-				if len(requestedPieces) < piecesDownloadNum {
+				if len(requestedPieces) < piecesDownloadNum && len(tStats.unselectedPiecesCopy()) > 0 {
 					pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
 				}
 			case requestMessage:
@@ -247,7 +247,7 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 
 			// TODO: Replace peer{} after you implement optimistic unchoking
 			pcm.changeUnchokedDownloaders(ctx, peer{}, tStats)
-			if len(requestedPieces) < piecesDownloadNum {
+			if len(requestedPieces) < piecesDownloadNum && len(tStats.unselectedPiecesCopy()) > 0 {
 				pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), torrentData.PieceLength)
 			}
 		case bootstrapInfo := <-pcm.connectionIntegration:
@@ -284,10 +284,9 @@ func (pcm *PeerConnectionManager) dropAllConnections() {
 	pcm.peerConnections = nil
 }
 
-func (pcm *PeerConnectionManager) pieceAssembler(ctx context.Context, tData TorrentData, blockInput <-chan pieceMessage, pieceOutput chan<- piece) {
+func (pcm *PeerConnectionManager) pieceAssembler(ctx context.Context, tData TorrentData, tStats *TorrentStats, blockInput <-chan pieceMessage, pieceOutput chan<- piece) {
 	pieceCatalogue := make(map[int][]byte)
 	changesCatalogue := make(map[int]*customdatatypes.FixedSizeBitfield)
-	counter := 1
 	for {
 		select {
 		case newBlock := <-blockInput:
@@ -347,13 +346,14 @@ func (pcm *PeerConnectionManager) pieceAssembler(ctx context.Context, tData Torr
 				delete(pieceCatalogue, pieceIndex)
 				delete(changesCatalogue, pieceIndex)
 
-				counter++
-
 				select {
 				case pieceOutput <- completePiece:
+					tStats.addPartialPiecesBytes(-len(completePiece.data))
 				case <-ctx.Done():
 					return
 				}
+			} else {
+				tStats.addPartialPiecesBytes(len(newBlock.block))
 			}
 		case <-ctx.Done():
 			fmt.Println("Exitted out of pieceAssembler")

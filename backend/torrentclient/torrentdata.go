@@ -27,6 +27,14 @@ type TorrentData struct {
 	Infohash customdatatypes.CustomHash
 }
 
+func (td *TorrentData) lastPieceLength() int {
+	remainder := td.TorrentSize % td.PieceLength
+	if remainder == 0 {
+		return td.PieceLength
+	}
+	return remainder
+}
+
 type FileData struct {
 	FileLength int
 	FilePath   string
