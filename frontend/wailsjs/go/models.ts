@@ -1,5 +1,10 @@
 export namespace torrentclient {
 	
+	export enum TorrentState {
+	    Running = 0,
+	    Paused = 1,
+	    Rechecking = 2,
+	}
 	export class peerDTO {
 	    peerID: string;
 	    ip: string;
@@ -59,7 +64,7 @@ export namespace torrentclient {
 	export class TorrentStatsDTO {
 	    uploadedBytes: number;
 	    downloadedBytes: number;
-	    torrentState: number;
+	    torrentState: TorrentState;
 	    recheckedPiecesCount: number;
 	    connectionDataStatuses: {[key: string]: ConnectionDataStatusDTO};
 	    piecesOnDiskCount: number;

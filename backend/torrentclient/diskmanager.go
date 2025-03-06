@@ -33,6 +33,7 @@ type PieceFileMapping struct {
 }
 
 type DiskManager struct {
+	fileIndex map[string]bool // TODO: Maybe rethink this. It can technically cause data races, but the 2 threads should never run together. If they do, more than this will break.
 }
 
 func (dm *DiskManager) createSparseFile(path string, tData *TorrentData) (*os.File, error) {
@@ -185,7 +186,6 @@ func (dm *DiskManager) MapPieceToFiles(p piece, tData *TorrentData) []PieceFileM
 }
 
 func (dm *DiskManager) fileWriter(ctx context.Context, pieceInput <-chan piece, pieceStoredAnnounce chan<- int, requestsInput <-chan BlockRetrievalRequest, tData *TorrentData) {
-	fileIndex := make(map[string]bool)
 	var directoryName string
 	if len(tData.Files) > 0 {
 		directoryName = tData.Name
@@ -200,11 +200,11 @@ func (dm *DiskManager) fileWriter(ctx context.Context, pieceInput <-chan piece, 
 
 			for _, pm := range pieceMappings {
 				joinedPath := filepath.Join(TEMP_DOWNLOAD_LOCATION, directoryName, pm.filePath)
-				_, fileExists := fileIndex[joinedPath]
+				_, fileExists := dm.fileIndex[joinedPath]
 				if !fileExists {
 					var err error
 					_, err = dm.createSparseFile(joinedPath, tData)
-					fileIndex[joinedPath] = true
+					dm.fileIndex[joinedPath] = true
 					if err != nil {
 						panic(err)
 					}
@@ -213,6 +213,7 @@ func (dm *DiskManager) fileWriter(ctx context.Context, pieceInput <-chan piece, 
 				err := dm.writePieceMappingToFile(joinedPath, pm)
 				if err != nil {
 					// TODO: Handle this error better
+					fmt.Println("!!!!!!!!!!!!!!!!!ERROR: FILEWRITER ERROR!!!!!!!!!!!!!")
 					panic(err)
 				}
 			}
@@ -260,7 +261,7 @@ func (dm *DiskManager) pieceFileMappingsForTorrent(tData TorrentData) []PieceFil
 	pieceFileMappings := make([]PieceFileMapping, 0)
 
 	pieceLength := tData.PieceLength
-	remainder := tData.TorrentSize % len(tData.PieceHashes)
+	remainder := tData.TorrentSize % tData.PieceLength
 	if len(tData.Files) == 0 {
 		for i, _ := range tData.PieceHashes {
 			p := piece{pieceIndex: i, data: nil}
@@ -281,6 +282,12 @@ func (dm *DiskManager) pieceFileMappingsForTorrent(tData TorrentData) []PieceFil
 	var pieceOffset int64 = 0
 	pieceIndex := 0
 
+	if pieceIndex == len(tData.PieceHashes)-1 && remainder != 0 {
+		pieceLength = remainder
+	} else {
+		pieceLength = tData.PieceLength
+	}
+
 	for _, file := range tData.Files {
 		fileOffset = 0
 
@@ -294,6 +301,12 @@ func (dm *DiskManager) pieceFileMappingsForTorrent(tData TorrentData) []PieceFil
 				fileOffset += int64(pieceLength - int(pieceOffset))
 				pieceOffset = 0
 				pieceIndex++
+
+				if p.pieceIndex == len(tData.PieceHashes)-1 && remainder != 0 {
+					pieceLength = remainder
+				} else {
+					pieceLength = tData.PieceLength
+				}
 			} else {
 				p := piece{pieceIndex: pieceIndex, data: nil}
 
@@ -331,13 +344,21 @@ func (dm *DiskManager) checkTorrentIntegrity(tData TorrentData, res chan<- piece
 		if joinedPath == prevBadFilePath {
 			continue
 		}
-		data, _ := dm.readPieceMappingFromFile(joinedPath, pieceMapping)
+		data, err := dm.readPieceMappingFromFile(joinedPath, pieceMapping)
+
+		if err != nil {
+			prevBadFilePath = joinedPath
+			fmt.Println("ERROR: Couldn't read file with path: " + joinedPath)
+		}
 
 		pieceBuffer = append(pieceBuffer, data...)
 
 		if i < len(pieceFileMappings)-1 && pieceFileMappings[i+1].p.pieceIndex != pieceMapping.p.pieceIndex ||
 			i == len(pieceFileMappings)-1 {
 			pieceValid := dm.pieceValid(&tData, piece{pieceIndex: pieceMapping.p.pieceIndex, data: pieceBuffer})
+			if pieceValid {
+				dm.fileIndex[joinedPath] = true
+			}
 
 			res <- pieceValidationResult{pieceIndex: pieceMapping.p.pieceIndex, valid: pieceValid}
 			pieceBuffer = make([]byte, 0)
@@ -354,4 +375,12 @@ func (dm *DiskManager) pieceValid(tData *TorrentData, p piece) bool {
 
 	hashCorrect := bytes.Equal(pieceHash, tData.PieceHashes[p.pieceIndex].HashBytes)
 	return hashCorrect
+}
+
+func NewDiskManager() *DiskManager {
+	dm := DiskManager{}
+
+	fileIndex := make(map[string]bool)
+	dm.fileIndex = fileIndex
+	return &dm
 }

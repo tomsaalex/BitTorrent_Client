@@ -107,7 +107,13 @@ func (pcm *PeerConnectionManager) establishIncomingConnection(ctx context.Contex
 }
 
 func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, pieceToWriter chan<- piece, havePieceAnnouncer <-chan int, blockRetrievalRequests chan<- BlockRetrievalRequest) {
-	peerRequestChan <- true
+	select {
+	case peerRequestChan <- true:
+		fmt.Println("Sent peer request")
+	case <-ctx.Done():
+		fmt.Println("Exitted out of connectionManager")
+		return
+	}
 
 	connectionOutput := make(chan connMessage)
 
@@ -161,7 +167,7 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 			rawMessage := receivedMessage.peerMsg
 			switch peerMessage := rawMessage.(type) {
 			case pieceMessage:
-				fmt.Println("Got block. Piece index #" + strconv.Itoa(peerMessage.index) + " - block start: " + strconv.Itoa(peerMessage.begin))
+				//fmt.Println("Got block. Piece index #" + strconv.Itoa(peerMessage.index) + " - block start: " + strconv.Itoa(peerMessage.begin))
 				tStats.markBlockAsObtained(BlockRequest{pieceIndex: peerMessage.index, blockStart: peerMessage.begin})
 				/*if len(requestedPieces) < piecesDownloadNum {
 					pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
@@ -516,7 +522,7 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(ctx context.Context,
 							return
 						}
 
-						fmt.Println("Made request for " + strconv.Itoa(req.pieceIndex) + " - " + strconv.Itoa(req.blockStart))
+						//fmt.Println("Made request for " + strconv.Itoa(req.pieceIndex) + " - " + strconv.Itoa(req.blockStart))
 					}
 
 					tStats.markPieceAsRequested(pieceIndex)

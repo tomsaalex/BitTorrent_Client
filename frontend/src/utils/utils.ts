@@ -1,3 +1,6 @@
+import { torrentclient } from "../../wailsjs/go/models";
+import { TorrentsLoadingState } from "../slices/torrentSlice";
+
 type TypedSize = {
     dataAmount: number;
     unit: string;
@@ -27,4 +30,12 @@ export function bytesToUpperUnit(byteCount: number) {
 
     let convertedSize: TypedSize = { dataAmount: byteCount, unit }
     return convertedSize;
+}
+
+export function torrentStateToString(torrentState: torrentclient.TorrentState): string {
+    switch (torrentState) {
+        case torrentclient.TorrentState.Running: return "Running"
+        case torrentclient.TorrentState.Paused: return "Paused"
+        case torrentclient.TorrentState.Rechecking: return "Rechecking"
+    }
 }

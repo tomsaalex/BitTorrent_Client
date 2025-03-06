@@ -17,6 +17,7 @@ export default function TorrentsList({ torrents }: TorrentsListProps) {
                         <th>Name</th>
                         <th>Size</th>
                         <th>Progress</th>
+                        <th>Status</th>
                         <th>Down Speed</th>
                         <th>Up Speed</th>
                         <th>Ratio</th>

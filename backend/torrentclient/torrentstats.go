@@ -6,10 +6,10 @@ import (
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
 )
 
-type torrentState int
+type TorrentState int
 
 const (
-	Running torrentState = iota
+	Running TorrentState = iota
 	Paused
 	Rechecking
 )
@@ -38,7 +38,7 @@ func newConnectionDataStatus(p peer, bitfieldSize int) (connectionDataStatus, er
 type TorrentStats struct {
 	torrentInfohash customdatatypes.CustomHash
 
-	state   torrentState
+	state   TorrentState
 	stateMu sync.Mutex
 
 	recheckedPiecesCount   int
@@ -219,14 +219,14 @@ func (ts *TorrentStats) cancelRequestsToPeer(peerConn *peerConnection) {
 	ts.requestedBlocks = validRequests
 }
 
-func (ts *TorrentStats) getState() torrentState {
+func (ts *TorrentStats) getState() TorrentState {
 	ts.stateMu.Lock()
 	defer ts.stateMu.Unlock()
 
 	return ts.state
 }
 
-func (ts *TorrentStats) changeState(newState torrentState) {
+func (ts *TorrentStats) changeState(newState TorrentState) {
 	ts.stateMu.Lock()
 	defer ts.stateMu.Unlock()
 

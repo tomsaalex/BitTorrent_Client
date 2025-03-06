@@ -38,6 +38,15 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	var AllTorrentStates = []struct {
+		Value  torrentclient.TorrentState
+		TSName string
+	}{
+		{torrentclient.Running, "Running"},
+		{torrentclient.Paused, "Paused"},
+		{torrentclient.Rechecking, "Rechecking"},
+	}
+
 	// Create application with options
 	err := wails.Run(&options.App{
 		Title:  "BitTorrent_Client",
@@ -106,6 +115,9 @@ func main() {
 		Bind: []interface{}{
 			app,
 			client,
+		},
+		EnumBind: []interface{}{
+			AllTorrentStates,
 		},
 	})
 

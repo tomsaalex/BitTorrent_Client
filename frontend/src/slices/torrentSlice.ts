@@ -3,12 +3,12 @@ import { torrentclient } from "../../wailsjs/go/models"
 import { AppThunk, RootState } from "../app/store"
 import { GenerateAggregateReport } from '../../wailsjs/go/torrentclient/TorrentClient'
 
-export interface TorrentsState {
+export interface TorrentsLoadingState {
     torrents: torrentclient.TorrentDTO[]
     status: 'idle' | 'loading' | 'failed'
 }
 
-const initialState: TorrentsState = {
+const initialState: TorrentsLoadingState = {
     status: 'idle',
     torrents: []
 }

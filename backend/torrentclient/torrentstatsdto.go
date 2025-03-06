@@ -14,7 +14,7 @@ type ConnectionDataStatusDTO struct {
 type TorrentStatsDTO struct {
 	UploadedBytes        int          `json:"uploadedBytes"`
 	DownloadedBytes      int          `json:"downloadedBytes"`
-	State                torrentState `json:"torrentState"`
+	State                TorrentState `json:"torrentState"`
 	RecheckedPiecesCount int          `json:"recheckedPiecesCount"`
 
 	ConnectionDataStatuses map[string]ConnectionDataStatusDTO `json:"connectionDataStatuses"`

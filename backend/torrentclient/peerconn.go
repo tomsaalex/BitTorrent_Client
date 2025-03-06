@@ -530,6 +530,7 @@ func (pc *peerConnection) forwarderRoutine(message peerMessage) {
 		length := peerMessage.length
 
 		pc.sendRequest(index, begin, length)
+
 		slog.LogAttrs(
 			context.Background(),
 			slog.LevelInfo,
@@ -690,6 +691,7 @@ func (pc *peerConnection) receiveMessage(buffcon *bufio.Reader) (peerMessage, er
 
 		receiveCounter++
 		fmt.Println("Received blocks: " + strconv.Itoa(receiveCounter))
+
 		slog.LogAttrs(
 			context.Background(),
 			slog.LevelInfo,
@@ -955,13 +957,13 @@ func (pc *peerConnection) sendRequest(index, begin, length int) error {
 	_, writeErr := pc.connection.Write(encodedRequestMsg)
 	if writeErr != nil {
 		failedSendCounter++
-		fmt.Println("Failed sent messages: " + strconv.Itoa(failedSendCounter) + " / Successful sent messages: " + strconv.Itoa(successSendCounter))
+		//fmt.Println("Failed sent messages: " + strconv.Itoa(failedSendCounter) + " / Successful sent messages: " + strconv.Itoa(successSendCounter))
 
 		return &PeerCommunicationError{Message: "Couldn't send request", InvolvedPeer: pc.otherPeer}
 
 	}
 	successSendCounter++
-	fmt.Println("Failed sent messages: " + strconv.Itoa(failedSendCounter) + " / Successful sent messages: " + strconv.Itoa(successSendCounter))
+	//fmt.Println("Failed sent messages: " + strconv.Itoa(failedSendCounter) + " / Successful sent messages: " + strconv.Itoa(successSendCounter))
 	return nil
 }
 

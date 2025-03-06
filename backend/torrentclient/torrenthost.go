@@ -21,7 +21,7 @@ const (
 type torrentHost struct {
 	torrentData  TorrentData
 	torrentStats *TorrentStats
-	diskManager  DiskManager
+	diskManager  *DiskManager
 
 	torrentUpdateRequest chan bool
 	torrentUpdateReply   chan TorrentDTO
@@ -49,6 +49,8 @@ func (th *torrentHost) trackerManager(ctx context.Context, eventsChannel <-chan 
 		peerListChan <- trackerResponse.peers
 	}
 
+	handleAnnounce(T_STARTED)
+
 	for {
 		select {
 		case eventToExecute := <-eventsChannel:
@@ -63,19 +65,17 @@ func (th *torrentHost) trackerManager(ctx context.Context, eventsChannel <-chan 
 	}
 }
 
-func (th *torrentHost) recheckTorrent() error {
+func (th *torrentHost) recheckTorrent(recheckDone chan<- struct{}) {
 	res := make(chan pieceValidationResult)
 	prevTorrentState := th.torrentStats.getState()
 	defer func() {
 		th.torrentStats.changeState(prevTorrentState)
+		recheckDone <- struct{}{}
 	}()
 
 	th.torrentStats.changeState(Rechecking)
 
-	validPieces, err := customdatatypes.NewFixedSizeBitfield(len(th.torrentData.PieceHashes))
-	if err != nil {
-		return err
-	}
+	validPieces, _ := customdatatypes.NewFixedSizeBitfield(len(th.torrentData.PieceHashes))
 
 	go th.diskManager.checkTorrentIntegrity(th.torrentData, res)
 
@@ -87,7 +87,6 @@ func (th *torrentHost) recheckTorrent() error {
 	}
 
 	th.torrentStats.UpdateRecheckedPieces(validPieces)
-	return nil
 }
 
 func (th *torrentHost) torrentManager(ctx context.Context) {
@@ -118,18 +117,15 @@ func (th *torrentHost) torrentManager(ctx context.Context) {
 	havePieceAnnouncer := make(chan int)
 
 	blockRequestsInput := make(chan BlockRetrievalRequest)
+	recheckDone := make(chan struct{})
 
-	th.recheckTorrent()
-
-	go th.trackerManager(ctx, trackerEventsChannel, peerListChannel)
-	go th.peerConnectionManager.connectionManager(ctx, th.torrentData, th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, havePieceAnnouncer, blockRequestsInput)
-	go th.diskManager.fileWriter(ctx, pieceToWriter, newStoredPieceChan, blockRequestsInput, &th.torrentData)
-	trackerEventsChannel <- T_STARTED
+	go th.recheckTorrent(recheckDone)
 
 	for {
 		select {
 		case centralPeerList = <-peerListChannel:
 			// TODO: it's debatable whether this is a good idea. We don't really need both ways to send the peers, I don't think?
+
 			peersToConnectChan <- centralPeerList
 			slog.LogAttrs(
 				context.Background(),
@@ -184,6 +180,10 @@ func (th *torrentHost) torrentManager(ctx context.Context) {
 			torrentDTO.TorrentStats = torrentStatsDTO
 
 			th.torrentUpdateReply <- torrentDTO
+		case <-recheckDone:
+			go th.trackerManager(ctx, trackerEventsChannel, peerListChannel)
+			go th.peerConnectionManager.connectionManager(ctx, th.torrentData, th.torrentStats, th.peerID, peerRequestChan, peersToConnectChan, pieceToWriter, havePieceAnnouncer, blockRequestsInput)
+			go th.diskManager.fileWriter(ctx, pieceToWriter, newStoredPieceChan, blockRequestsInput, &th.torrentData)
 		case <-ctx.Done():
 			return
 		}
@@ -193,7 +193,7 @@ func (th *torrentHost) torrentManager(ctx context.Context) {
 func NewTorrentHost(torrentData TorrentData, torrentStats *TorrentStats, peerID customdatatypes.CustomHash, pcm PeerConnectionManager) *torrentHost {
 	torrReqChan := make(chan bool)
 	torrReplyChan := make(chan TorrentDTO)
-
-	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, peerID: peerID, peerConnectionManager: pcm, torrentUpdateRequest: torrReqChan, torrentUpdateReply: torrReplyChan}
+	diskManager := NewDiskManager()
+	newTorrent := &torrentHost{torrentData: torrentData, torrentStats: torrentStats, diskManager: diskManager, peerID: peerID, peerConnectionManager: pcm, torrentUpdateRequest: torrReqChan, torrentUpdateReply: torrReplyChan}
 	return newTorrent
 }

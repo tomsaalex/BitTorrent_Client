@@ -7,12 +7,12 @@ import { useSelector } from "react-redux";
 import TorrentsList from "../Components/TorrentsList";
 
 export function TorrentsPage() {
-    const torrentsFetchInterval = 1500;
+    const torrentsFetchInterval = 100;
     const dispatch = useAppDispatch();
     const torrentsList = useAppSelector(selectTorrents)
 
     useEffect(() => {
-        // Fetch torrents every 1.5s
+        // Fetch torrents every 'torrentsFetchInterval' seconds
         const interval = setInterval(() => {
             dispatch(importTorrentsList());
         }, torrentsFetchInterval);
