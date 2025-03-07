@@ -2,7 +2,6 @@ package torrentclient
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -88,8 +87,6 @@ func handleIncomingConnections(ctx context.Context, servedTorrentRequest chan []
 			panic(err)
 		}
 
-		fmt.Println(conn.LocalAddr().String())
-		fmt.Println(conn.RemoteAddr().String())
 		slog.LogAttrs(
 			context.Background(),
 			slog.LevelInfo,

@@ -108,8 +108,8 @@ func (th *torrentHost) torrentManager(ctx context.Context) {
 	peersToConnectChan := make(chan []peer)
 	peerRequestChan := make(chan bool)
 
-	bitfieldOutputChan := make(chan *customdatatypes.FixedSizeBitfield)
-	bitfieldRequestChan := make(chan bool)
+	//bitfieldOutputChan := make(chan *customdatatypes.FixedSizeBitfield)
+	//bitfieldRequestChan := make(chan bool)
 
 	pieceToWriter := make(chan piece)
 	newStoredPieceChan := make(chan int)
@@ -143,14 +143,14 @@ func (th *torrentHost) torrentManager(ctx context.Context) {
 				slog.String("method", "torrentManager"),
 				slog.Int("peerCount", len(centralPeerList)),
 			)
-		case <-bitfieldRequestChan:
-			bitfieldOutputChan <- th.torrentStats.pieceIndex
-			slog.LogAttrs(
-				context.Background(),
-				slog.LevelInfo,
-				"Sent bitfield to connection manager",
-				slog.String("method", "torrentManager"),
-			)
+		/*case <-bitfieldRequestChan:
+		bitfieldOutputChan <- th.torrentStats.pieceIndex
+		slog.LogAttrs(
+			context.Background(),
+			slog.LevelInfo,
+			"Sent bitfield to connection manager",
+			slog.String("method", "torrentManager"),
+		)*/
 		case pieceIndex := <-newStoredPieceChan:
 			slog.LogAttrs(
 				context.Background(),

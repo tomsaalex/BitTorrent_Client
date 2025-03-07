@@ -386,81 +386,6 @@ func (pc *peerConnection) connDataManager(ctx context.Context, tStats *TorrentSt
 	}
 }
 
-/*func (pc *peerConnection) connDataManager(ctx context.Context, tStats *TorrentStats, forwarderStateUpdate <-chan StateUpdateType, receiverStateUpdate <-chan StateUpdateType, peerIndexUpdate <-chan int, receiverDataRateUpdate <-chan int, peerBitfieldUpdate <-chan []byte) {
-	downloadDataCounter := 0
-	downloadTransferSpeed := 0
-
-	downloadRates := make([]int, 10)
-	downloadRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
-
-	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
-	peerBitfield, err := pc.createRemotePeerBitfield()
-
-	if err != nil {
-		// TODO: Handle this more elegantly somehow. It's technically an impossible error, but we still don't want to crash.
-		panic(err)
-	}
-
-	for {
-		select {
-		case updateType := <-forwarderStateUpdate:
-			switch updateType {
-			case Choked:
-				cd.amChoking = true
-			case Unchoked:
-				cd.amChoking = false
-			case Interested:
-				cd.amInterested = true
-			case NotInterested:
-				cd.amInterested = false
-			}
-		case updateType := <-receiverStateUpdate:
-			switch updateType {
-			case Choked:
-				cd.peerChoking = true
-			case Unchoked:
-				cd.peerChoking = false
-			case Interested:
-				cd.peerInterested = true
-			case NotInterested:
-				cd.peerInterested = false
-			}
-		case newHas := <-peerIndexUpdate:
-			peerBitfield.SetBit(newHas)
-			// TODO: Now that we're storing all of the remote peer bitfields in the torrentStats, consider whether we should still store them here.
-			// It might be a good idea for performance, aka leaving the one in torrentStats just for the sake of the UI.
-			// Think on this later.
-			tStats.updateRemotePeerPieces(peerPieceReport{remotePeer: pc.otherPeer, reportedPieceIndex: newHas})
-		case dataReport := <-receiverDataRateUpdate:
-			downloadDataCounter += dataReport
-			tStats.addDataReport(dataExchangeReport{remotePeer: pc.otherPeer, trafType: IncomingTraffic, exchangedDataCount: dataReport})
-		case <-pc.connDataRequests:
-			pc.connDataReplies <- cd
-		case index := <-pc.pieceCheck:
-			pieceCheckResult, _ := peerBitfield.IsSet(index)
-			pc.pieceStatus <- pieceCheckResult
-		case <-pc.speedRequests:
-			pc.speedReplies <- downloadTransferSpeed
-		case <-downloadRateTicker.C:
-			downloadRates = addDataPoint(downloadRates, downloadDataCounter)
-			downloadTransferSpeed = calcConnectionSpeed(downloadRates)
-			downloadDataCounter = 0
-			tStats.addSpeedReport(speedExchangeReport{remotePeer: pc.otherPeer, connSpeed: downloadTransferSpeed, trafType: IncomingTraffic})
-		case bitfield := <-peerBitfieldUpdate:
-			// TODO: I think we need to check if any of the extra bits are set and drop the connection if so
-			err := peerBitfield.ImportBitfield(bitfield)
-			if err != nil {
-				// TODO: Better error handling
-				panic(err)
-				// TODO: DROP CONNECTION
-			}
-		case <-ctx.Done():
-			fmt.Println("Exitted out of connDataManager")
-			return
-		}
-	}
-}*/
-
 func (pc *peerConnection) forwarderRoutine(message peerMessage) {
 	switch peerMessage := message.(type) {
 	case chokeMessage:
@@ -745,6 +670,13 @@ func (pc *peerConnection) sendHandshakeMsg(infohash, peerID customdatatypes.Cust
 	if writeErr != nil {
 		return &PeerConnectionError{Message: "Failed to send handshake", InvolvedPeer: pc.otherPeer}
 	}
+	slog.LogAttrs(
+		context.Background(),
+		slog.LevelInfo,
+		"Sent handshake message!",
+		slog.String("peerIP", pc.otherPeer.ip),
+		slog.Int("PeerPort", int(pc.otherPeer.port)),
+	)
 	return nil
 }
 
@@ -1040,15 +972,17 @@ func (pc *peerConnection) sendCancel(index, begin, length int) error {
 }
 
 func (pc *peerConnection) sendBitfield(bitfieldBytes []byte) error {
-	var bitfieldBuffer bytes.Buffer
-
+	// Message length is 1 + number of bytes in the bitfield
 	msgLength := make([]byte, 4)
 	binary.BigEndian.PutUint32(msgLength, uint32(len(bitfieldBytes)+1))
-	msgID := make([]byte, 4)
-	binary.BigEndian.PutUint32(msgID, uint32(5))
+
+	// Message ID is 5
+	msgID := byte(5)
+
+	var bitfieldBuffer bytes.Buffer
 
 	bitfieldBuffer.Write(msgLength)
-	bitfieldBuffer.Write(msgID)
+	bitfieldBuffer.WriteByte(msgID)
 	bitfieldBuffer.Write(bitfieldBytes)
 
 	encodedBitfieldMsg := bitfieldBuffer.Bytes()

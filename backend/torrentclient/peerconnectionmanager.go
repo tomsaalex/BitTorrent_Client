@@ -66,6 +66,8 @@ func (pcm *PeerConnectionManager) establishConnections(ctx context.Context, peer
 		pcm.peerConnections = append(pcm.peerConnections, peerConnection)
 
 		peerConnection.launchConnectionRoutines(ctx, tStats)
+		localBitfield := tStats.piecesStoredToDisk
+		peerConnection.input <- bitfieldMessage{bitfield: localBitfield.ExposeBitfield()}
 	}
 }
 
