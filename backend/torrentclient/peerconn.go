@@ -88,6 +88,15 @@ type peerConnection struct {
 	downloadRates   []int
 	downloadRatesMu sync.Mutex
 
+	uploadDataCounter   int
+	uploadDataCounterMu sync.Mutex
+
+	uploadTransferSpeed   int
+	uploadTransferSpeedMu sync.Mutex
+
+	uploadRates   []int
+	uploadRatesMu sync.Mutex
+
 	connectionData   connData
 	connectionDataMu sync.Mutex
 
@@ -106,8 +115,11 @@ func newPeerConnection(peer peer, td TorrentData, output chan connMessage, assem
 
 	downloadDataCounter := 0
 	downloadTransferSpeed := 0
-
 	downloadRates := make([]int, 10)
+
+	uploadDataCounter := 0
+	uploadTransferSpeed := 0
+	uploadRates := make([]int, 10)
 
 	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
 
@@ -126,6 +138,9 @@ func newPeerConnection(peer peer, td TorrentData, output chan connMessage, assem
 		downloadDataCounter:   downloadDataCounter,
 		downloadTransferSpeed: downloadTransferSpeed,
 		downloadRates:         downloadRates,
+		uploadDataCounter:     uploadDataCounter,
+		uploadTransferSpeed:   uploadTransferSpeed,
+		uploadRates:           uploadRates,
 		connectionData:        cd,
 		peerBitfield:          remotePeerBitfield,
 	}
@@ -133,6 +148,7 @@ func newPeerConnection(peer peer, td TorrentData, output chan connMessage, assem
 }
 
 func setupIncomingConnection(connInfo connBootstrapInfo, td TorrentData, output chan connMessage, assemblerInput chan pieceMessage) (*peerConnection, error) {
+	// TODO: This is basically a duplicate of newPeerConnection, but it's not obvious that it will run instead of that one sometimes. Maybe refactor somehow.
 	input := make(chan peerMessage)
 
 	tcpAddr := connInfo.conn.RemoteAddr().(*net.TCPAddr)
@@ -141,8 +157,11 @@ func setupIncomingConnection(connInfo connBootstrapInfo, td TorrentData, output 
 
 	downloadDataCounter := 0
 	downloadTransferSpeed := 0
-
 	downloadRates := make([]int, 10)
+
+	uploadDataCounter := 0
+	uploadTransferSpeed := 0
+	uploadRates := make([]int, 10)
 
 	cd := connData{amChoking: true, amInterested: false, peerChoking: true, peerInterested: false}
 
@@ -161,6 +180,9 @@ func setupIncomingConnection(connInfo connBootstrapInfo, td TorrentData, output 
 		downloadDataCounter:   downloadDataCounter,
 		downloadTransferSpeed: downloadTransferSpeed,
 		downloadRates:         downloadRates,
+		uploadDataCounter:     uploadDataCounter,
+		uploadTransferSpeed:   uploadTransferSpeed,
+		uploadRates:           uploadRates,
 		connectionData:        cd,
 		peerBitfield:          remotePeerBitfield,
 	}
@@ -180,19 +202,19 @@ func calcAverageSpeed(dataPoints []int) int {
 
 func (pc *peerConnection) launchConnectionRoutines(ctx context.Context, tStats *TorrentStats) {
 	go pc.connDataManager(ctx, tStats)
-	go pc.forwarderController(ctx)
+	go pc.forwarderController(ctx, tStats)
 	go pc.receiverController(ctx, tStats)
 }
 
-func (pc *peerConnection) forwarderController(ctx context.Context) {
+func (pc *peerConnection) forwarderController(ctx context.Context, tStats *TorrentStats) {
 	keepAliveTicker := time.NewTicker(KEEP_ALIVE_TIME)
 
 	for {
 		select {
 		case rawMessage := <-pc.input:
-			pc.forwarderRoutine(rawMessage)
+			pc.sendMessage(rawMessage)
 			// TODO: Should really quantify the amount of data sent in the connDataManager routine
-			switch rawMessage.(type) {
+			switch peerMessage := rawMessage.(type) {
 			case chokeMessage:
 				pc.updateLocalConnState(Choked)
 			case unchokeMessage:
@@ -201,6 +223,8 @@ func (pc *peerConnection) forwarderController(ctx context.Context) {
 				pc.updateLocalConnState(Interested)
 			case notInterestedMessage:
 				pc.updateLocalConnState(NotInterested)
+			case pieceMessage:
+				pc.updateUploadedAmount(tStats, len(peerMessage.block))
 			}
 		case <-keepAliveTicker.C:
 			pc.sendKeepAlive()
@@ -332,6 +356,14 @@ func (pc *peerConnection) updateDownloadedAmount(tStats *TorrentStats, downloade
 	tStats.addDataReport(dataExchangeReport{remotePeer: pc.otherPeer, trafType: IncomingTraffic, exchangedDataCount: downloadedAmount})
 }
 
+func (pc *peerConnection) updateUploadedAmount(tStats *TorrentStats, uploadedAmount int) {
+	pc.uploadDataCounterMu.Lock()
+	defer pc.uploadDataCounterMu.Unlock()
+
+	pc.uploadDataCounter += uploadedAmount
+	tStats.addDataReport(dataExchangeReport{remotePeer: pc.otherPeer, trafType: OutgoingTraffic, exchangedDataCount: uploadedAmount})
+}
+
 func (pc *peerConnection) getConnectionData() connData {
 	pc.connectionDataMu.Lock()
 	defer pc.connectionDataMu.Unlock()
@@ -373,20 +405,39 @@ func (pc *peerConnection) updateDownloadSpeed(tStats *TorrentStats) {
 	tStats.addSpeedReport(speedExchangeReport{remotePeer: pc.otherPeer, connSpeed: pc.downloadTransferSpeed, trafType: IncomingTraffic})
 }
 
+func (pc *peerConnection) updateUploadSpeed(tStats *TorrentStats) {
+	pc.uploadRatesMu.Lock()
+	defer pc.uploadRatesMu.Unlock()
+
+	pc.uploadDataCounterMu.Lock()
+	defer pc.uploadDataCounterMu.Unlock()
+
+	pc.uploadRates = append(pc.uploadRates[1:], pc.uploadDataCounter)
+
+	pc.uploadTransferSpeedMu.Lock()
+	defer pc.uploadTransferSpeedMu.Unlock()
+
+	pc.uploadTransferSpeed = calcAverageSpeed(pc.uploadRates)
+
+	pc.uploadDataCounter = 0
+	tStats.addSpeedReport(speedExchangeReport{remotePeer: pc.otherPeer, connSpeed: pc.uploadTransferSpeed, trafType: OutgoingTraffic})
+}
+
 func (pc *peerConnection) connDataManager(ctx context.Context, tStats *TorrentStats) {
-	downloadRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
+	dataRateTicker := time.NewTicker(CONNECTION_SPEED_UPDATE_TIME)
 
 	for {
 		select {
-		case <-downloadRateTicker.C:
+		case <-dataRateTicker.C:
 			pc.updateDownloadSpeed(tStats)
+			pc.updateUploadSpeed(tStats)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (pc *peerConnection) forwarderRoutine(message peerMessage) {
+func (pc *peerConnection) sendMessage(message peerMessage) {
 	switch peerMessage := message.(type) {
 	case chokeMessage:
 		pc.sendChoke()
