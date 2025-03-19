@@ -180,6 +180,29 @@ func (bf *FixedSizeBitfield) GetUnsetBitsIndices() []int {
 	return unsetBits
 }
 
+func (bf *FixedSizeBitfield) GetSetBitsIndices() []int {
+	setBits := make([]int, 0)
+
+	bf.internalFieldMu.Lock()
+	defer bf.internalFieldMu.Unlock()
+
+	for byteind, currbyte := range bf.internalField {
+		bitsToIgnore := 0
+		if byteind == len(bf.internalField)-1 {
+			bitsToIgnore = len(bf.internalField)*8 - bf.bitCount
+		}
+
+		for bitToTransfer := 0; bitToTransfer <= 7-bitsToIgnore; bitToTransfer++ {
+			selectedBit := (currbyte >> (7 - bitToTransfer)) & 1
+			if selectedBit == 1 {
+				setBits = append(setBits, byteind*8+bitToTransfer)
+			}
+		}
+	}
+
+	return setBits
+}
+
 func NewFixedSizeBitfield(bitCount int) (*FixedSizeBitfield, error) {
 	if bitCount <= 0 {
 		return nil, &generalerrors.TypeInitializationError{TypeName: "FixedSizeBitfield", ErrorDetails: "Bitfield length cannot be 0 or negative."}

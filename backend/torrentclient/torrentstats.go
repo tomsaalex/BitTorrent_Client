@@ -6,6 +6,8 @@ import (
 	"github.com/tomsaalex/BitTorrent_Client/backend/customdatatypes"
 )
 
+var piecesRemovedFromUnselected = make([]int, 0)
+
 type TorrentState int
 
 const (
@@ -176,6 +178,8 @@ func (ts *TorrentStats) markPieceAsRequested(pIndex int) {
 			posToRem = i
 		}
 	}
+
+	piecesRemovedFromUnselected = append(piecesRemovedFromUnselected, pIndex)
 
 	ts.unselectedPieces = append(ts.unselectedPieces[:posToRem], ts.unselectedPieces[posToRem+1:]...)
 }

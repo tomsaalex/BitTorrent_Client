@@ -99,6 +99,7 @@ func (cm cancelMessage) Type() peerMessageType {
 }
 
 type connectionDropMessage struct {
+	bitfield []byte
 }
 
 func (cdm connectionDropMessage) Type() peerMessageType {

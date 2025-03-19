@@ -6,7 +6,6 @@ import (
 	"crypto/sha1"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"sort"
 	"strconv"
 	"time"
@@ -109,6 +108,8 @@ func (pcm *PeerConnectionManager) establishIncomingConnection(ctx context.Contex
 }
 
 func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrentData TorrentData, tStats *TorrentStats, peerID customdatatypes.CustomHash, peerRequestChan chan<- bool, peersChan <-chan []peer, pieceToWriter chan<- piece, havePieceAnnouncer <-chan int, blockRetrievalRequests chan<- BlockRetrievalRequest) {
+	pieceRarityMap := NewPieceRarityMap()
+
 	select {
 	case peerRequestChan <- true:
 		fmt.Println("Sent peer request")
@@ -162,7 +163,7 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 
 				pcm.changeUnchokedDownloaders(ctx, peer{}, tStats)
 				if len(requestedPieces) < piecesDownloadNum && len(tStats.unselectedPiecesCopy()) > 0 {
-					pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), torrentData.PieceLength)
+					pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), pieceRarityMap)
 				}
 			}
 		case receivedMessage := <-connectionOutput:
@@ -171,16 +172,19 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 			case pieceMessage:
 				//fmt.Println("Got block. Piece index #" + strconv.Itoa(peerMessage.index) + " - block start: " + strconv.Itoa(peerMessage.begin))
 				tStats.markBlockAsObtained(BlockRequest{pieceIndex: peerMessage.index, blockStart: peerMessage.begin})
-				/*if len(requestedPieces) < piecesDownloadNum {
-					pcm.schedulePiecesForDownload(&requestedPieces, &torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
-				}*/
+
+				requestedPieces := tStats.requestedPiecesCopy()
+
+				if len(requestedPieces) < piecesDownloadNum && len(tStats.unselectedPiecesCopy()) > 0 {
+					pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), pieceRarityMap)
+				}
 			case unchokeMessage:
 				// This makes the client start scheduling pieces faster, without waiting for the regular timer.
 				// It prevents most of the annoying 10-15 seconds wait when the download starts.
 				requestedPieces := tStats.requestedPiecesCopy()
 
 				if len(requestedPieces) < piecesDownloadNum && len(tStats.unselectedPiecesCopy()) > 0 {
-					pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
+					pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(requestedPieces), pieceRarityMap)
 				}
 			case requestMessage:
 				validErr := validateRequestMessage(peerMessage, &torrentData)
@@ -204,10 +208,59 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 				case <-ctx.Done():
 					return
 				}
+			case haveMessage:
+				pieceOnDisk, err := tStats.piecesStoredToDisk.IsSet(peerMessage.pieceIndex)
+				if err != nil {
+					break
+				}
+
+				if !pieceOnDisk {
+					pieceRarityMap.incrementPieceAvailability(peerMessage.pieceIndex)
+				}
+			case bitfieldMessage:
+				bitfield, _ := customdatatypes.NewFixedSizeBitfield(len(torrentData.PieceHashes))
+				// This can't throw an error, it's checked in the peerConn
+				bitfield.ImportBitfield(peerMessage.bitfield)
+
+				peerPieces := bitfield.GetSetBitsIndices()
+				for _, pieceIndex := range peerPieces {
+					pieceOnDisk, err := tStats.piecesStoredToDisk.IsSet(pieceIndex)
+					if err != nil {
+						break
+					}
+
+					if !pieceOnDisk {
+						pieceRarityMap.incrementPieceAvailability(pieceIndex)
+					}
+				}
 			case cancelMessage:
 				// TODO: Same as requestMessage, or when adding Endgame Mode, I suppose?
 			case connectionDropMessage:
 				pcm.dropConnection(receivedMessage.peerConn)
+
+				bitfield, _ := customdatatypes.NewFixedSizeBitfield(len(torrentData.PieceHashes))
+				// This can't throw an error, it's used in peerConn before getting here
+				bitfield.ImportBitfield(peerMessage.bitfield)
+
+				peerPieces := bitfield.GetSetBitsIndices()
+				for _, pieceIndex := range peerPieces {
+					pieceOnDisk, err := tStats.piecesStoredToDisk.IsSet(pieceIndex)
+					if err != nil {
+						break
+					}
+					if !pieceOnDisk {
+						err = pieceRarityMap.decrementPieceAvailability(pieceIndex)
+						if err != nil {
+							slog.LogAttrs(
+								context.Background(),
+								slog.LevelError,
+								"Connection bitfield contains piece that wasn't accounted for in rarityMap. Detected during connection drop.",
+								slog.String("method", "connectionManager"),
+								slog.Int("pieceIndex", pieceIndex),
+							)
+						}
+					}
+				}
 			}
 		case receivedPiece := <-assemblerOutput:
 			slog.LogAttrs(
@@ -228,7 +281,7 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 			requestedPieces := tStats.requestedPiecesCopy()
 
 			if len(requestedPieces) < piecesDownloadNum {
-				pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(requestedPieces), torrentData.PieceLength)
+				pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(requestedPieces), pieceRarityMap)
 			}
 		case pieceIndex := <-havePieceAnnouncer:
 			slog.LogAttrs(
@@ -256,7 +309,7 @@ func (pcm *PeerConnectionManager) connectionManager(ctx context.Context, torrent
 			// TODO: Replace peer{} after you implement optimistic unchoking
 			pcm.changeUnchokedDownloaders(ctx, peer{}, tStats)
 			if len(requestedPieces) < piecesDownloadNum && len(tStats.unselectedPiecesCopy()) > 0 {
-				pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), torrentData.PieceLength)
+				pcm.schedulePiecesForDownload(ctx, &torrentData, tStats, piecesDownloadNum-len(tStats.requestedPieces), pieceRarityMap)
 			}
 		case bootstrapInfo := <-pcm.connectionIntegration:
 			pcm.establishIncomingConnection(ctx, bootstrapInfo, tStats, torrentData, connectionOutput, peerID, assemblerInput)
@@ -476,9 +529,61 @@ func (pcm *PeerConnectionManager) changeUnchokedDownloaders(ctx context.Context,
 	}
 }
 
-func (pcm *PeerConnectionManager) schedulePiecesForDownload(ctx context.Context, tData *TorrentData, tStats *TorrentStats, numPieces, pieceLength int) {
+func (pcm *PeerConnectionManager) schedulePiecesForDownload(ctx context.Context, tData *TorrentData, tStats *TorrentStats, numPieces int, pm *PieceRarityMap) {
 	fmt.Println("Started scheduling pieces")
+
 	for i := 0; i < numPieces; i++ {
+		pieceIndex := pm.getRarestPieceIndex()
+
+		if pieceIndex < 0 {
+			slog.LogAttrs(
+				context.Background(),
+				slog.LevelError,
+				"No more pieces available to request",
+				slog.String("method", "schedulePiecesForDownload"),
+			)
+			return
+		}
+
+		for _, conn := range pcm.peerConnections {
+			connData := conn.getConnectionData()
+			pieceAvailable, _ := conn.peerHasPiece(pieceIndex)
+
+			if pieceAvailable {
+				if connData.amChoking {
+					continue
+				}
+				if connData.peerChoking {
+					select {
+					case conn.input <- interestedMessage{}:
+					case <-ctx.Done():
+						return
+					}
+
+					continue
+				}
+				newRequests := pcm.generateBlockRequests(tData, pieceIndex)
+
+				for _, req := range newRequests {
+					tStats.markBlockAsRequested(req)
+					reqMsg := requestMessage{index: req.pieceIndex, begin: req.blockStart, length: req.blockLength}
+					select {
+					case conn.input <- reqMsg:
+					case <-ctx.Done():
+						return
+					}
+				}
+
+				tStats.markPieceAsRequested(pieceIndex)
+
+				// TODO: We're removing it here because trying to request it twice randomly is a bad idea. Ideally, we would have a waiting timeout and rerequest after that's over.
+				pm.removePiece(pieceIndex)
+				break
+			}
+		}
+	}
+
+	/*for i := 0; i < numPieces; i++ {
 		scheduleSuccessful := false
 
 		unselectedPieces := tStats.unselectedPiecesCopy()
@@ -513,7 +618,7 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(ctx context.Context,
 						continue
 					}
 					anyConnAvailable = true
-					newRequests := pcm.generateBlockRequests(tData, pieceIndex, pieceLength)
+					newRequests := pcm.generateBlockRequests(tData, pieceIndex)
 
 					for _, req := range newRequests {
 						tStats.markBlockAsRequested(req)
@@ -539,13 +644,13 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(ctx context.Context,
 				return
 			}
 		}
-	}
+	}*/
 }
 
-func (pcm *PeerConnectionManager) generateBlockRequests(tData *TorrentData, pieceIndex, pieceLength int) []BlockRequest {
+func (pcm *PeerConnectionManager) generateBlockRequests(tData *TorrentData, pieceIndex int) []BlockRequest {
 	begin := 0
 	isLastPiece := len(tData.PieceHashes)-1 == pieceIndex
-
+	pieceLength := tData.PieceLength
 	if isLastPiece {
 		var lastPieceLength int
 		if len(tData.Files) > 0 {

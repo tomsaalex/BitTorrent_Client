@@ -7,7 +7,7 @@ import { useSelector } from "react-redux";
 import TorrentsList from "../Components/TorrentsList";
 
 export function TorrentsPage() {
-    const torrentsFetchInterval = 100;
+    const torrentsFetchInterval = 1500;
     const dispatch = useAppDispatch();
     const torrentsList = useAppSelector(selectTorrents)
 
