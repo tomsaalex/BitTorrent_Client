@@ -20,6 +20,9 @@ var failedSendCounter int = 0
 var successSendCounter int = 0
 var receiveCounter int = 0
 
+var requestedPieces = 0
+var receivedPieces = 0
+
 // A bit smaller than 2 minutes to make sure the connection survives
 const KEEP_ALIVE_TIME = time.Second * 110
 
@@ -244,6 +247,7 @@ func (pc *peerConnection) forwarderController(ctx context.Context, tStats *Torre
 
 func (pc *peerConnection) receiverController(ctx context.Context, tStats *TorrentStats) {
 	buffcon := bufio.NewReader(pc.connection)
+	bitfieldReceived := false
 
 	for {
 		// TODO: Perhaps we shouldn't even be accepting data from choked peers? (we have to, but we should just dismiss some)
@@ -272,35 +276,64 @@ func (pc *peerConnection) receiverController(ctx context.Context, tStats *Torren
 			pc.updateRemoteConnState(Choked)
 		case unchokeMessage:
 			pc.updateRemoteConnState(Unchoked)
-			pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}
+			select {
+			case pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}:
+			case <-ctx.Done():
+				return
+			}
 		case interestedMessage:
 			pc.updateRemoteConnState(Interested)
 		case notInterestedMessage:
 			pc.updateRemoteConnState(NotInterested)
 		case haveMessage:
 			pc.newHasFromPeer(tStats, peerMessage.pieceIndex)
+			select {
+			case pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}:
+			case <-ctx.Done():
+				return
+			}
 		case pieceMessage:
 			pc.assemblerInput <- peerMessage
-			pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}
+			select {
+			case pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}:
+			case <-ctx.Done():
+				return
+			}
 			pc.updateDownloadedAmount(tStats, len(peerMessage.block))
 		case requestMessage:
 			if connData.amChoking {
 				break
 			}
-			pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}
+			select {
+			case pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}:
+			case <-ctx.Done():
+				return
+			}
 		case cancelMessage:
 			if connData.amChoking {
 				break
 			}
-			pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}
+			select {
+			case pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}:
+			case <-ctx.Done():
+				return
+			}
 		case bitfieldMessage:
-			// TODO: Presumably, we should ignore it if it gets sent more than once?
+			if bitfieldReceived {
+				break
+			}
+			bitfieldReceived = true
 			err := pc.setPeerBitfield(peerMessage.bitfield)
 			if err != nil {
 				select {
 				case pc.output <- connMessage{peerMsg: connectionDropMessage{}, peerConn: pc}:
 				case <-ctx.Done():
 				}
+				return
+			}
+			select {
+			case pc.output <- connMessage{peerMsg: peerMessage, peerConn: pc}:
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -666,7 +699,7 @@ func (pc *peerConnection) receiveMessage(buffcon *bufio.Reader) (peerMessage, er
 		block := msgBuf[8:payloadLen]
 
 		receiveCounter++
-		fmt.Println("Received blocks: " + strconv.Itoa(receiveCounter))
+		fmt.Println("Received blocks: " + strconv.Itoa(receiveCounter) + "/" + strconv.Itoa(requestedPieces))
 
 		slog.LogAttrs(
 			context.Background(),
@@ -936,7 +969,7 @@ func (pc *peerConnection) sendRequest(index, begin, length int) error {
 	requestBuffer.Write(lengthBuf)
 
 	encodedRequestMsg := requestBuffer.Bytes()
-
+	requestedPieces++
 	_, writeErr := pc.connection.Write(encodedRequestMsg)
 	if writeErr != nil {
 		failedSendCounter++
