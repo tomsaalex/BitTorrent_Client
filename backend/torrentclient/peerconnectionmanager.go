@@ -533,7 +533,7 @@ func (pcm *PeerConnectionManager) schedulePiecesForDownload(ctx context.Context,
 	fmt.Println("Started scheduling pieces")
 
 	for i := 0; i < numPieces; i++ {
-		pieceIndex := pm.getRarestPieceIndex()
+		pieceIndex := pm.getRarePieceIndex()
 
 		if pieceIndex < 0 {
 			slog.LogAttrs(

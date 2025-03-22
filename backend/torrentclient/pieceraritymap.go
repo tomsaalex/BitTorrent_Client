@@ -1,18 +1,28 @@
 package torrentclient
 
-import generalerrors "github.com/tomsaalex/BitTorrent_Client/backend/GeneralErrors"
+import (
+	"math/rand/v2"
+	"sort"
+
+	generalerrors "github.com/tomsaalex/BitTorrent_Client/backend/GeneralErrors"
+)
 
 type PieceRarityMap struct {
-	frequencyMap map[int]int
+	frequencyMap     map[int]int
+	cachedPieceSlice []int
+	cacheValid       bool
 }
 
 func NewPieceRarityMap() *PieceRarityMap {
 	frequencyMap := make(map[int]int)
-	return &PieceRarityMap{frequencyMap: frequencyMap}
+	cacheValid := false
+	return &PieceRarityMap{frequencyMap: frequencyMap, cacheValid: cacheValid}
 }
 
 func (pm *PieceRarityMap) incrementPieceAvailability(pieceIndex int) {
 	oldValue, found := pm.frequencyMap[pieceIndex]
+
+	pm.cacheValid = false
 	if !found {
 		pm.frequencyMap[pieceIndex] = 1
 		return
@@ -27,33 +37,66 @@ func (pm *PieceRarityMap) decrementPieceAvailability(pieceIndex int) error {
 		return &generalerrors.IllegalAccessError{Message: "Piece availability cannot be decreased. It is already 0."}
 	}
 
+	pm.cacheValid = false
 	if oldValue == 1 {
 		delete(pm.frequencyMap, pieceIndex)
 		return nil
 	}
 
 	pm.frequencyMap[pieceIndex] = oldValue - 1
-
 	return nil
 }
 
 func (pm *PieceRarityMap) removePiece(pieceIndex int) {
 	delete(pm.frequencyMap, pieceIndex)
-}
 
-func (pm *PieceRarityMap) getRarestPieceIndex() int {
-	// TODO: This could be done much faster if we used an ordered map instead of a regular map. Check if trade offs with insert/remove speed is worth it.
-	// TODO: Always selecting the rarest piece isn't a good strategy, as it creates needless contention on that one piece if every peer does the same. It would be wise to add some randomness.
-
-	desiredIndex := -1
-	currentAvailability := -1
-
-	for pieceIndex, availability := range pm.frequencyMap {
-		if availability < currentAvailability || desiredIndex == -1 {
-			desiredIndex = pieceIndex
-			currentAvailability = availability
+	removedPieceLocation := -1
+	for i, piece := range pm.cachedPieceSlice {
+		if piece == pieceIndex {
+			removedPieceLocation = i
+			break
 		}
 	}
+	if removedPieceLocation != -1 {
+		pm.cachedPieceSlice = append(pm.cachedPieceSlice[:removedPieceLocation], pm.cachedPieceSlice[removedPieceLocation+1:]...)
+	}
+}
 
-	return desiredIndex
+func (pm *PieceRarityMap) rebuildCache() {
+	keys := make([]int, len(pm.frequencyMap))
+
+	i := 0
+	for k := range pm.frequencyMap {
+		keys[i] = k
+		i++
+	}
+
+	sort.Slice(keys, func(i int, j int) bool {
+		return pm.frequencyMap[keys[i]] < pm.frequencyMap[keys[j]]
+	})
+
+	pm.cachedPieceSlice = keys
+	pm.cacheValid = true
+}
+
+func (pm *PieceRarityMap) getRarePieceIndex() int {
+	if len(pm.frequencyMap) == 0 {
+		return -1
+	}
+
+	if !pm.cacheValid {
+		pm.rebuildCache()
+	}
+
+	randRange := 20
+	if len(pm.cachedPieceSlice) < randRange {
+		randRange = len(pm.cachedPieceSlice)
+	}
+
+	chosenIndex := rand.IntN(randRange)
+	chosenPiece := pm.cachedPieceSlice[chosenIndex]
+	pm.cachedPieceSlice = append(pm.cachedPieceSlice[:chosenIndex], pm.cachedPieceSlice[chosenIndex+1:]...)
+	delete(pm.frequencyMap, chosenPiece)
+
+	return chosenPiece
 }
