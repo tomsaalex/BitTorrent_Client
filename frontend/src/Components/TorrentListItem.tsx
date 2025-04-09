@@ -3,12 +3,15 @@ import { bytesToUpperUnit, torrentStateToString } from "../utils/utils";
 import { ProgressBar } from "./ProgressBar";
 
 interface TorrentListItemProps {
-    torrent: torrentclient.TorrentDTO
+    torrent: torrentclient.TorrentDTO,
+    selectionHandler: (e: React.MouseEvent<HTMLTableRowElement, MouseEvent>, infohash: string) => void,
+    isSelected: boolean
 }
 
-export default function TorrentListItem({ torrent }: TorrentListItemProps) {
+export default function TorrentListItem({ torrent, selectionHandler, isSelected }: TorrentListItemProps) {
 
     const torrentSize = (torrent.torrentData.files?.length > 0) ? torrent.torrentData.torrentSize : torrent.torrentData.fileLength
+    const itemColorClass = (isSelected == true) ? "bg-red-600" : "hover:bg-stone-500"
 
     let downloadSpeed = 0;
     let uploadSpeed = 0;
@@ -47,9 +50,11 @@ export default function TorrentListItem({ torrent }: TorrentListItemProps) {
     const typedDownloadSpeed = bytesToUpperUnit(downloadSpeed)
     const typedUploadSpeed = bytesToUpperUnit(uploadSpeed)
 
-
     return (
-        <tr>
+        <tr
+            className={itemColorClass}
+            onClick={e => { e.stopPropagation(); selectionHandler(e, torrent.torrentData.infohash) }}
+        >
             <td>
                 {torrent.torrentData.name}
             </td>

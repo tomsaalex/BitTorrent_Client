@@ -21,9 +21,9 @@ export function TorrentsPage() {
     }, []);
 
     return (
-        <>
+        <div className="flex flex-col h-screen">
             <TopBar />
             <TorrentsList torrents={torrentsList} />
-        </>
+        </div>
     )
 }
